@@ -49,6 +49,7 @@ from app.domain import (
     Approval,
     CallRecord,
     Carrier,
+    DialPlan,
     Money,
     Order,
     OrderStatus,
@@ -80,6 +81,12 @@ class PortalStore(Store, Protocol):
 #: A sweep the router can trigger without importing jobs. Returns the call ids placed.
 Sweep = Callable[[], Awaitable[list[str]]]
 
+#: Placing the calls a plan describes. Injected for the same reason as ``sweep``: ``api`` may
+#: not import ``vapi`` under the layering contract, and it should not -- the portal is the
+#: authenticated human's surface and the phone is a stranger's. main.py is the one place
+#: allowed to know both, so it hands this down with the placer already bound.
+Dialler = Callable[[list[DialPlan]], Awaitable[object]]
+
 
 @contextmanager
 def _guard() -> Iterator[None]:
@@ -107,6 +114,7 @@ def create_api_router(
     *,
     market: Market,
     sweep: Sweep,
+    dial: Dialler,
     now: Callable[[], datetime],
     settings: Settings,
 ) -> APIRouter:
@@ -228,7 +236,12 @@ def create_api_router(
                 detail=f"order {order.reference} has no mandate: nothing is authorized",
             )
         with _guard():
-            await market.plan_rfq(order, settings.rfq_carrier_count)
+            plans = await market.plan_rfq(order, settings.rfq_carrier_count)
+            # plan_rfq returns nothing when the market for this mandate version is already
+            # claimed, so a second click -- or a second instance pointed at the same database
+            # -- reaches this line with an empty list and dials nobody.
+            if plans:
+                await dial(plans)
         return await get_order(order_id)
 
     @router.get("/orders/{order_id}/comparison")

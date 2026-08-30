@@ -16,10 +16,10 @@ it onward. Nothing is cross-origin, so no CORS policy has to exist — which mat
 that carries the only endpoint able to write a price cap. `*` would be the wrong answer there,
 and under demo pressure `*` is what people reach for.
 
-**One line to change before this works.** In `vercel.json`, replace both occurrences of
-`REPLACE-WITH-BACKEND-HOST` with the backend's public hostname, then redeploy. Vercel cannot
-interpolate an environment variable into a rewrite destination, so this is committed config
-rather than a dashboard setting — which is arguably better: it is reviewable in a diff.
+The destination is `https://volta-backend-778k.onrender.com`, hardcoded in `vercel.json`.
+Vercel cannot interpolate an environment variable into a rewrite destination, so this is
+committed config rather than a dashboard setting — which is arguably better: it is reviewable
+in a diff. **If the backend moves, change it here and redeploy.**
 
 The third rewrite sends everything else to `index.html`. The portal routes on the hash, so it
 does not strictly need it today, but a deep link would 404 without it the moment routing changes.

@@ -117,6 +117,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, str]:
         return await run_campaign(plans, call_placer, call_settings, profile=profile)
 
+    async def dial_plans(plans: list[DialPlan]) -> object:
+        """The portal's dialler, with the placer and settings already bound."""
+        return await dial(plans, placer, settings)
+
     async def sweep() -> list[str]:
         return await jobs.sweep_deadlines(store, placer, settings, now=now_utc, dial=dial)
 
@@ -177,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cast(PortalStore, store),
             market=market,
             sweep=sweep,
+            dial=dial_plans,
             now=now_utc,
             settings=settings,
         ),
