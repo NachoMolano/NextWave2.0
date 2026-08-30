@@ -17,7 +17,28 @@ from app.domain import (
     OutboundMessage,
 )
 
-__all__ = ["render_award_request", "render_commitment_email", "render_incident_report"]
+__all__ = [
+    "render_award_request",
+    "render_commitment_email",
+    "render_incident_report",
+    "render_not_selected_email",
+]
+
+
+def render_not_selected_email(
+    *, order_id: str, reference: str, carrier_name: str, to_address: str
+) -> OutboundMessage:
+    return OutboundMessage(
+        channel=NotificationChannel.EMAIL,
+        to_address=to_address,
+        subject=f"Quotation update — {reference}",
+        body=(
+            f"Hello {carrier_name},\n\nThank you for quoting transport for {reference}. "
+            "Your company was not selected for this movement. We appreciate the time and "
+            "expect to work with you on future opportunities.\n\nVolta transport coordination"
+        ),
+        order_id=order_id,
+    )
 
 
 def render_commitment_email(

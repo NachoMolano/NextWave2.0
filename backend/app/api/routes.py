@@ -46,6 +46,7 @@ from app.api.schemas import (
     NewOrderRequest,
     OrderAggregate,
     OrderSummary,
+    SecurityModeRequest,
     Session,
     SetMandateRequest,
     SweepResult,
@@ -111,6 +112,7 @@ Sweep = Callable[[], Awaitable[list[str]]]
 #: user-operated surface and the phone is a stranger's. main.py is the one place allowed to
 #: know both, so it hands this down with the placer already bound.
 Dialler = Callable[[list[DialPlan]], Awaitable[object]]
+AwardDecisionNotifier = Callable[[Order, str], Awaitable[None]]
 
 
 @contextmanager
@@ -145,6 +147,7 @@ def create_api_router(
     now: Callable[[], datetime],
     settings: Settings,
     notifier: Notifier | None = None,
+    notify_award_decision: AwardDecisionNotifier | None = None,
 ) -> APIRouter:
     async def portal_actor() -> str:
         """The unauthenticated portal still records a stable audit actor."""
@@ -480,6 +483,8 @@ def create_api_router(
                             }
                         ),
                     )
+                    if notify_award_decision is not None:
+                        await notify_award_decision(order, quote_id)
                     plans = await market.plan_award(order, quote_id)
                     if plans:
                         placed = await dial(plans)
@@ -587,7 +592,18 @@ def create_api_router(
     @router.get("/session", response_model=Session)
     async def get_session(actor: Annotated[str, Depends(portal_actor)]) -> Session:
         """The deployment identity recorded for portal actions."""
-        return Session(actor=actor, rfq_carrier_count=settings.rfq_carrier_count)
+        return Session(
+            actor=actor,
+            rfq_carrier_count=settings.rfq_carrier_count,
+            strict_conversation_security=settings.strict_conversation_security,
+        )
+
+    @router.post("/security-mode", response_model=Session)
+    async def set_security_mode(
+        body: SecurityModeRequest, actor: Annotated[str, Depends(portal_actor)]
+    ) -> Session:
+        settings.strict_conversation_security = body.enabled
+        return await get_session(actor)
 
     @router.put("/profile", response_model=BusinessProfile)
     async def update_profile(

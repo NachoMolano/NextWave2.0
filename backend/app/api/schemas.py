@@ -43,6 +43,7 @@ __all__ = [
     "NextAction",
     "OrderAggregate",
     "OrderSummary",
+    "SecurityModeRequest",
     "Session",
     "SetMandateRequest",
     "SweepResult",
@@ -348,8 +349,14 @@ class Session(BaseModel):
     #: number it is about to ring rather than saying "some carriers" or hardcoding a 3 that
     #: drifts from `settings.rfq_carrier_count` the day somebody changes it.
     rfq_carrier_count: int = Field(
-        ge=1, description="Carriers dialled when the market opens, from server settings."
+        ge=0,
+        description="Carriers dialled when the market opens; zero means every eligible carrier.",
     )
+    strict_conversation_security: bool = False
+
+
+class SecurityModeRequest(BaseModel):
+    enabled: bool
 
 
 class EmailTestRequest(BaseModel):

@@ -37,6 +37,7 @@ from app.domain import (
     ApprovalKind,
     ApprovalReason,
     AwardConflict,
+    CallPhase,
     CallRecord,
     CallReport,
     Commitment,
@@ -656,6 +657,15 @@ class ModelTools:
             # producing the folio, never by us reading one out.
             order = await self._store.order_by_reference(args.fact_value.strip())
 
+        if order is not None and (
+            order.status in {OrderStatus.DELIVERED, OrderStatus.CLOSED, OrderStatus.CANCELLED}
+            or (
+                order.assigned_carrier_id is not None
+                and order.assigned_carrier_id != call.carrier_id
+            )
+        ):
+            order = None
+
         expected = self._expected_fact(order, args.fact_kind) if order else None
         matched = expected is not None and _normalize(expected) == _normalize(args.fact_value)
 
@@ -780,32 +790,42 @@ class ModelTools:
             )
         )
 
+        target = _INCIDENT_TRANSITIONS[args.subject]
         if order is not None:
-            target = _INCIDENT_TRANSITIONS[args.subject]
             if args.load_at_risk:
                 target = OrderStatus.AT_RISK
             if target is not None and order.status not in (target, OrderStatus.CLOSED):
                 await self._store.set_order_status(order.id, target)
 
-            # Everything the whitelist does not move goes to a person. A claimed "delivered"
-            # is the sharp one: closing an order on a caller's word is how a load is written
-            # off while it is still on a truck.
-            if target is None or severity is Severity.HIGH or not call.identity_verified:
-                await self._store.raise_approval(
-                    Approval(
-                        order_id=order.id,
-                        call_id=call_id,
-                        kind=ApprovalKind.INCIDENT,
-                        reason=self._incident_reason(args, call),
-                        context={
-                            "subject": args.subject.value,
-                            "detail": args.detail,
-                            "new_eta": eta.isoformat() if eta else "",
-                            "identity_verified": call.identity_verified,
-                        },
-                        raised_at=self._now(),
-                    )
+        # Everything the whitelist does not move goes to a person. An uncorrelated inbound
+        # call is still visible in the approval queue, but cannot mutate any order. A claimed
+        # "delivered" is similarly never enough to close an order on a caller's word.
+        if (
+            order is None
+            or call.phase == CallPhase.STATUS_CHECK.value
+            or target is None
+            or severity is Severity.HIGH
+            or not call.identity_verified
+        ):
+            await self._store.raise_approval(
+                Approval(
+                    order_id=order.id if order else None,
+                    call_id=call_id,
+                    kind=ApprovalKind.INCIDENT,
+                    reason=(
+                        ApprovalReason.DEADLINE_BREACH
+                        if call.phase == CallPhase.STATUS_CHECK.value
+                        else self._incident_reason(args, call)
+                    ),
+                    context={
+                        "subject": args.subject.value,
+                        "detail": args.detail,
+                        "new_eta": eta.isoformat() if eta else "",
+                        "identity_verified": call.identity_verified,
+                    },
+                    raised_at=self._now(),
                 )
+            )
         return RESPONSES["incident_recorded"]
 
     @staticmethod

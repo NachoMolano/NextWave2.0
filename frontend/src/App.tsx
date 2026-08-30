@@ -219,6 +219,17 @@ function DebugPage() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [strictSecurity, setStrictSecurity] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    voltaApi.getSession().then((value) => setStrictSecurity(value.strict_conversation_security))
+  }, [])
+
+  async function toggleSecurity() {
+    if (strictSecurity === null) return
+    const updated = await voltaApi.setSecurityMode(!strictSecurity)
+    setStrictSecurity(updated.strict_conversation_security)
+  }
 
   async function send() {
     setBusy(true)
@@ -250,6 +261,17 @@ function DebugPage() {
         <p>These isolated controls are available only when the backend runs in local mode.</p>
       </div>
       <section className="surface profile-wide">
+        <div>
+          <p className="eyebrow">Conversation mode</p>
+          <h2>Strict security guidance</h2>
+          <p>
+            {strictSecurity ? 'Enabled' : 'Disabled'} · deterministic policy, identity, evidence,
+            and single-award controls always remain active.
+          </p>
+          <button className="secondary-button" disabled={strictSecurity === null} onClick={toggleSecurity}>
+            Turn strict guidance {strictSecurity ? 'off' : 'on'}
+          </button>
+        </div>
         <div>
           <p className="eyebrow">Resend</p>
           <h2>Arbitrary email composer</h2>
@@ -558,7 +580,7 @@ function OrderDetail({
     setMandateFormOpen(false)
     const told = dial
       ? `Mandate v${mandate.version + 1} recorded. ` +
-        `${carrierCount ?? 'The'} carriers are being dialled.`
+        `${carrierCount === null || carrierCount === 0 ? 'All eligible' : carrierCount} carriers are being dialled.`
       : `Mandate v${mandate.version + 1} recorded. Nobody was dialled.`
     return act(told, async () => {
       await voltaApi.setMandate(orderId, body)
@@ -785,7 +807,7 @@ function MandateForm({
 
   const confirmLabel = !firstGrant
     ? 'Raise the ceiling'
-    : carrierCount === null
+    : carrierCount === null || carrierCount === 0
       ? 'Authorize and open the market'
       : `Authorize and dial ${carrierCount} carriers`
 

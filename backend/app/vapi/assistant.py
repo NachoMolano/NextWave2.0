@@ -428,7 +428,14 @@ def build_assistant(
             "provider": model_provider,
             "model": model_id,
             "messages": [
-                {"role": "system", "content": build_runtime_system_prompt(profile, context)}
+                {
+                    "role": "system",
+                    "content": build_runtime_system_prompt(
+                        profile,
+                        context,
+                        strict_security=settings.strict_conversation_security,
+                    ),
+                }
             ],
             "tools": build_tool_definitions(settings),
         },
