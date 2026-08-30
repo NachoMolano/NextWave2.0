@@ -1,0 +1,304 @@
+"""The market: who gets called, how the comparison reads, and the single-award lock.
+
+Everything runs against InMemoryStore and FakeCallPlacer. Nothing here dials.
+
+OWNER: Track E.
+"""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.domain import (
+    Approval,
+    ApprovalKind,
+    ApprovalReason,
+    ApprovalStatus,
+    AwardConflict,
+    CallPhase,
+    Carrier,
+    Money,
+    Order,
+    OrderStatus,
+    PolicyOutcome,
+    QuoteRow,
+    QuoteStatus,
+    ReasonCode,
+)
+from app.tools.market import Market
+from tests.fakes import InMemoryStore
+
+NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+EQUIPMENT = "40-foot container chassis"
+
+
+def now() -> datetime:
+    return NOW
+
+
+def order(**overrides: object) -> Order:
+    base: dict[str, object] = {
+        "id": "order-1",
+        "reference": "OP-1042",
+        "status": OrderStatus.RECEIVED,
+        "origin": "the port of Manzanillo",
+        "destination": "Guadalajara",
+        "equipment": EQUIPMENT,
+        "cap": Money(cents=900_000, currency="USD"),
+        "target": Money(cents=820_000, currency="USD"),
+        "pickup_not_before": datetime(2026, 9, 2, tzinfo=UTC),
+        "pickup_not_after": datetime(2026, 9, 4, 23, 59, tzinfo=UTC),
+        "mandate_version": 1,
+        "mandate_set_by": "ops@pacifictextiles.mx",
+    }
+    return Order(**{**base, **overrides})  # type: ignore[arg-type]
+
+
+def quote(carrier_id: str, cents: int, **overrides: object) -> QuoteRow:
+    base: dict[str, object] = {
+        "order_id": "order-1",
+        "carrier_id": carrier_id,
+        "call_id": f"call-{carrier_id}",
+        "anchor_ms": 11_200,
+        "amount": Money(cents=cents, currency="USD"),
+        "components": [{"name": "all-in", "amount": str(cents / 100), "currency": "USD"}],
+        "cost_is_final": True,
+        "pickup_at": datetime(2026, 9, 3, 8, 0, tzinfo=UTC),
+        "equipment": EQUIPMENT,
+        "valid_until": NOW + timedelta(hours=6),
+    }
+    return QuoteRow(**{**base, **overrides})  # type: ignore[arg-type]
+
+
+def seeded(carriers: int = 3) -> tuple[InMemoryStore, Market]:
+    store = InMemoryStore()
+    for n in range(1, carriers + 1):
+        store.add_carrier(Carrier(id=f"carrier-{n}", name=f"Carrier {n}", phone=f"+5233000000{n}"))
+    store.add_order(order())
+    return store, Market(store, now=now)
+
+
+# ---------------------------------------------------------------------------------- plan_rfq
+
+
+async def test_plan_rfq_creates_one_call_per_carrier() -> None:
+    store, market = seeded()
+
+    plans = await market.plan_rfq(order(), 3)
+
+    assert len(plans) == 3
+    assert len(store.calls) == 3
+    assert {p.to_number for p in plans} == {"+52330000001", "+52330000002", "+52330000003"}
+    assert all(call.phase == CallPhase.RFQ.value for call in store.calls.values())
+
+
+async def test_the_frozen_context_carries_the_market_as_of_dial_time() -> None:
+    """The first call negotiates with nothing behind it; a later one has numbers."""
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 850_000))
+
+    plans = await market.plan_rfq(order(), 3)
+
+    assert plans[0].context["quotes_in_hand"] == 1
+    assert plans[0].context["best_rate_so_far"] == "8500"
+
+
+async def test_the_context_never_carries_a_figure_the_carrier_did_not_give() -> None:
+    """The ceiling is in the prompt so the agent can negotiate; policy still decides."""
+    _store, market = seeded()
+
+    plans = await market.plan_rfq(order(), 3)
+
+    assert plans[0].context["price_ceiling"] == "9000"
+    assert plans[0].context["reference"] == "OP-1042"
+
+
+async def test_a_thin_market_escalates_instead_of_dialling() -> None:
+    """Fewer than three is not a market to push through; it is a market with no comparison."""
+    store, market = seeded(carriers=2)
+
+    plans = await market.plan_rfq(order(), 3)
+
+    assert plans == []
+    assert store.calls == {}
+    approvals = list(store.approvals.values())
+    assert len(approvals) == 1
+    assert approvals[0].reason is ApprovalReason.NO_ELIGIBLE_CANDIDATE
+
+
+async def test_carriers_not_on_file_are_never_dialled() -> None:
+    """Volta onboards nobody by phone."""
+    store, market = seeded()
+    store.add_carrier(
+        Carrier(id="carrier-x", name="Unknown Hauliers", phone="+52330000009", is_on_file=False)
+    )
+
+    plans = await market.plan_rfq(order(), 5)
+
+    assert "carrier-x" not in {p.carrier.id for p in plans}
+
+
+# -------------------------------------------------------------------------------------- rank
+
+
+async def test_rank_keeps_the_losers_and_their_reason_codes() -> None:
+    """A comparison listing only the winner cannot be audited."""
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 880_000))
+    await store.add_quote(quote("carrier-2", 810_000))
+    await store.add_quote(quote("carrier-3", 1_050_000))
+
+    comparison = await market.rank(order())
+
+    assert len(comparison.entries) == 3
+    assert all(entry.reason_code for entry in comparison.entries)
+    winner = next(e for e in comparison.entries if e.is_winner)
+    assert winner.amount.cents == 810_000
+    over_cap = next(e for e in comparison.entries if e.amount.cents == 1_050_000)
+    assert over_cap.outcome == PolicyOutcome.ESCALATE.value
+    assert over_cap.reason_code == ReasonCode.OUTSIDE_MANDATE.value
+    assert over_cap.is_winner is False
+
+
+async def test_rank_records_a_decision_per_quote() -> None:
+    """The refusals are the auditable half. "Why not that one" needs a row to point at."""
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 810_000))
+    await store.add_quote(quote("carrier-2", 1_050_000))
+
+    await market.rank(order())
+
+    assert len(store.decisions) == 2
+    assert {d.cap_at_decision_cents for d in store.decisions.values()} == {900_000}
+
+
+async def test_rank_ignores_a_superseded_quote() -> None:
+    """The row survives as evidence but it was replaced by a later utterance."""
+    store, market = seeded()
+    old = await store.add_quote(quote("carrier-1", 810_000))
+    new = await store.add_quote(quote("carrier-1", 880_000))
+    await store.supersede_quote(old, new)
+
+    comparison = await market.rank(order())
+
+    assert [e.quote_id for e in comparison.entries] == [new]
+
+
+async def test_a_market_where_everything_is_over_the_cap_has_no_winner() -> None:
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 1_050_000))
+    await store.add_quote(quote("carrier-2", 1_100_000))
+
+    comparison = await market.rank(order())
+
+    assert comparison.winner_quote_id is None
+    assert len(comparison.entries) == 2, "the refusals still have to be shown to a human"
+
+
+async def test_ranking_is_stable_when_run_twice() -> None:
+    """The same market ranked twice picks the same winner, or the comparison is not evidence."""
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 850_000))
+    await store.add_quote(quote("carrier-2", 850_000, pickup_at=datetime(2026, 9, 2, tzinfo=UTC)))
+
+    first = await market.rank(order())
+    second = await market.rank(order())
+
+    assert first.winner_quote_id == second.winner_quote_id
+
+
+async def test_rank_on_an_order_with_no_mandate_yields_an_empty_comparison() -> None:
+    """Nothing is authorized under a mandate that was never granted."""
+    store = InMemoryStore()
+    store.add_order(Order(id="order-1", reference="OP-1042"))
+    market = Market(store, now=now)
+
+    comparison = await market.rank(await store.order("order-1"))  # type: ignore[arg-type]
+
+    assert comparison.entries == []
+    assert comparison.winner_quote_id is None
+
+
+# ---------------------------------------------------------------------- the approval and award
+
+
+async def test_request_award_approval_hands_over_the_whole_comparison() -> None:
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 810_000))
+    await store.add_quote(quote("carrier-2", 1_050_000))
+    comparison = await market.rank(order())
+
+    approval = await market.request_award_approval(order(), comparison)
+
+    assert approval.kind is ApprovalKind.AWARD_APPROVAL
+    assert approval.reason is ApprovalReason.AWARD_SELECTED
+    assert len(approval.context["entries"]) == 2, "the loser travels with the request"
+    order_row = await store.order("order-1")
+    assert order_row is not None and order_row.status is OrderStatus.AWAITING_APPROVAL
+
+
+async def test_an_award_needs_an_approved_approval() -> None:
+    """Nothing else authorizes one. An open request is not a decision."""
+    store, market = seeded()
+    quote_id = await store.add_quote(quote("carrier-1", 810_000))
+    pending = Approval(
+        id="approval-1",
+        order_id="order-1",
+        kind=ApprovalKind.AWARD_APPROVAL,
+        reason=ApprovalReason.AWARD_SELECTED,
+        context={"winner_quote_id": quote_id},
+        status=ApprovalStatus.OPEN,
+    )
+
+    with pytest.raises(ValueError, match="approved approval"):
+        await market.award(order(), pending)
+
+
+async def test_a_granted_award_accepts_exactly_one_quote() -> None:
+    store, market = seeded()
+    quote_id = await store.add_quote(quote("carrier-1", 810_000))
+    approved = Approval(
+        id="approval-1",
+        order_id="order-1",
+        kind=ApprovalKind.AWARD_APPROVAL,
+        reason=ApprovalReason.AWARD_SELECTED,
+        context={"winner_quote_id": quote_id},
+        status=ApprovalStatus.APPROVED,
+    )
+
+    awarded = await market.award(order(), approved)
+
+    assert awarded == quote_id
+    assert store.quotes[quote_id].status is QuoteStatus.ACCEPTED
+    order_row = await store.order("order-1")
+    assert order_row is not None and order_row.status is OrderStatus.AWARDING
+
+
+async def test_a_second_award_conflicts_and_raises_an_approval() -> None:
+    """Two open bookings is the worst failure in the brief.
+
+    The database refuses the second, and the answer is a person -- never a retry that
+    eventually picks one.
+    """
+    store, market = seeded()
+    first_id = await store.add_quote(quote("carrier-1", 810_000))
+    second_id = await store.add_quote(quote("carrier-2", 830_000))
+
+    def approval_for(quote_id: str) -> Approval:
+        return Approval(
+            id=f"approval-{quote_id}",
+            order_id="order-1",
+            kind=ApprovalKind.AWARD_APPROVAL,
+            reason=ApprovalReason.AWARD_SELECTED,
+            context={"winner_quote_id": quote_id},
+            status=ApprovalStatus.APPROVED,
+        )
+
+    await market.award(order(), approval_for(first_id))
+    with pytest.raises(AwardConflict):
+        await market.award(order(), approval_for(second_id))
+
+    accepted = [q for q in store.quotes.values() if q.status is QuoteStatus.ACCEPTED]
+    assert len(accepted) == 1
+    assert accepted[0].id == first_id
+    assert any(a.reason is ApprovalReason.CONFLICTING_INFORMATION for a in store.approvals.values())
