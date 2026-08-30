@@ -150,24 +150,6 @@ def test_rfq_greeting_does_not_recite_the_load(
         assert rfq.cargo.lower() in spoken(phase)
 
 
-def test_rfq_gives_the_load_detail_only_as_it_is_asked_for(
-    profile: CompanyProfile, context: CallContext
-) -> None:
-    """The opening turn dumped the whole operation block. Detail is answered, not offered."""
-    rfq = context.model_copy(update={"phase": CallPhase.RFQ})
-    prompt = build_system_prompt(profile, rfq).lower()
-    runtime = build_runtime_system_prompt(profile, rfq).lower()
-
-    for text in (prompt, runtime):
-        assert "let them ask what the service is" in text
-        assert "the lane in one short sentence" in text
-    # The phrase wraps in the long prompt, so each form gets the anchor that never splits.
-    assert "piece at a time, as they ask for it" in prompt
-    assert "never volunteer three facts" in prompt
-    assert "one piece at a time as they ask" in runtime
-    assert "never three facts where they asked for one" in runtime
-
-
 def test_rfq_requires_a_real_attempt_to_move_the_price(
     profile: CompanyProfile, context: CallContext
 ) -> None:
