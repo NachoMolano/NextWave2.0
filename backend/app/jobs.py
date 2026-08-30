@@ -37,6 +37,7 @@ from app.domain import (
     Store,
 )
 from app.tools.market import Market
+from app.vapi.assistant import profile_from_settings
 from app.vapi.campaign import run_campaign
 
 __all__ = ["run_forever", "sweep_deadlines", "timeout_open_markets"]
@@ -57,7 +58,6 @@ async def sweep_deadlines(
     dial: Dialler | None = None,
 ) -> list[str]:
     """Call every carrier whose delivery is overdue. Returns the call ids placed."""
-    dial = dial or run_campaign
     moment = now()
     plans: list[DialPlan] = []
 
@@ -116,7 +116,10 @@ async def sweep_deadlines(
         )
 
     if plans:
-        await dial(plans, placer, settings)
+        if dial is None:
+            await run_campaign(plans, placer, settings, profile=profile_from_settings(settings))
+        else:
+            await dial(plans, placer, settings)
     return [plan.call_id for plan in plans]
 
 
@@ -184,7 +187,12 @@ async def _calls_for(store: Store, order_id: str) -> list[CallRecord]:
 
 
 async def run_forever(
-    store: Store, placer: CallPlacer, settings: Settings, *, now: Callable[[], datetime]
+    store: Store,
+    placer: CallPlacer,
+    settings: Settings,
+    *,
+    now: Callable[[], datetime],
+    dial: Dialler | None = None,
 ) -> None:
     """The loop main.py starts at boot.
 
@@ -194,7 +202,7 @@ async def run_forever(
     while True:
         await asyncio.sleep(settings.sweep_interval_seconds)
         try:
-            dialled = await sweep_deadlines(store, placer, settings, now=now)
+            dialled = await sweep_deadlines(store, placer, settings, now=now, dial=dial)
             ranked = await timeout_open_markets(store, settings, now=now)
             if dialled or ranked:
                 log.info("jobs.tick", dialled=len(dialled), ranked=len(ranked))

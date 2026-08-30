@@ -71,15 +71,17 @@ def _context(phase: CallPhase = CallPhase.RFQ, **overrides: Any) -> CallContext:
 
 @pytest.mark.parametrize(
     "phase",
-    [CallPhase.RFQ, CallPhase.AWARD, CallPhase.RENEGOTIATION, CallPhase.INBOUND],
+    [
+        CallPhase.RFQ,
+        CallPhase.AWARD,
+        CallPhase.RENEGOTIATION,
+        CallPhase.INBOUND,
+        CallPhase.STATUS_CHECK,
+    ],
     ids=lambda phase: phase.value,
 )
 def test_every_speakable_phase_composes_an_assistant(phase: CallPhase) -> None:
-    """STATUS_CHECK is absent on purpose: Track D still owes ``_STATUS_CHECK``.
-
-    Composing it raises KeyError from prompts.py, which is the correct failure and not this
-    package's to mask. ``test_seam.py`` holds the strict xfail that forces the fix.
-    """
+    """Every phase the system can enter must produce a complete transient assistant."""
     assistant = build_assistant(PROFILE, _context(phase), _settings())
 
     assert assistant["firstMessage"]
@@ -87,12 +89,6 @@ def test_every_speakable_phase_composes_an_assistant(phase: CallPhase) -> None:
     assert isinstance(model, dict)
     assert model["messages"][0]["role"] == "system"
     assert model["messages"][0]["content"].strip()
-
-
-def test_status_check_is_not_speakable_yet_and_says_so_loudly() -> None:
-    """A phase the system can enter but cannot speak in is a crash waiting for a live call."""
-    with pytest.raises(KeyError):
-        build_assistant(PROFILE, _context(CallPhase.STATUS_CHECK), _settings())
 
 
 def test_the_recording_is_on_because_evidence_depends_on_it() -> None:

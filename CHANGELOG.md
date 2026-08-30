@@ -16,6 +16,26 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T01:42-0500 · integration, ci · codex
+
+All four tracks are reconciled on the Track C branch. `main.py` now injects the real tool,
+webhook, portal, report-model, market and campaign dependencies instead of invoking the router
+factories with their obsolete zero-argument signatures. The deadline sweep receives the
+profile-aware campaign dialler, so an OUTBOUND 2 call composes the same transient assistant as
+an RFQ.
+
+`tests/test_main.py` proves the resulting application mounts `/health`, `/vapi/events`,
+`/vapi/tools`, and the portal without a database, Vapi, or a phone. The fake store now preserves
+late-call evidence and decision timestamps like the real store; stale Track B assertions now
+cover the implemented `STATUS_CHECK` phase and the current `ModelTools` constructor.
+
+The real transcript export at `supabase/legacy_call_evidence.json` was removed: recordings and
+transcripts do not belong in Git. `.github/workflows/ci.yml` makes the offline test suite,
+Ruff, and mypy required CI work for pull requests and `main` pushes.
+
+→ Affects: **Everyone** — merge the integrated Track C branch rather than the three separate
+track PRs. CI must be required on `main` in GitHub branch protection.
+
 ## 2026-08-30T01:19-0500 · store, api, supabase · nacho/track-c
 
 Track C: `store/` and `api/` implemented, the RLS posture hardened, the world seeded.

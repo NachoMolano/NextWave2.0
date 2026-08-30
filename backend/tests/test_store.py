@@ -340,25 +340,12 @@ async def test_a_call_is_found_by_its_vapi_id(world: World) -> None:
 
 
 async def test_a_redelivered_status_update_does_not_erase_the_transcript(
-    world: World, request: pytest.FixtureRequest
+    world: World,
 ) -> None:
     """ports.py: a status-update can land after the end-of-call-report. It must not clobber.
 
-    ``InMemoryStore.upsert_call`` replaces the stored record wholesale, so the empty
-    transcript a status-update carries erases the real one written moments earlier by the
-    end-of-call-report. That contradicts the reason ports.py gives for the method being an
-    upsert at all. ``fakes.py`` belongs to Phase 0, so this is reported in CHANGELOG rather
-    than fixed here, and pinned strict for the same reason Phase 0 pinned STATUS_CHECK: the
-    day the fake is fixed this test XPASSes and fails, forcing whoever fixed it to delete the
-    marker instead of leaving a stale exemption behind.
+    Both stores merge a late status update instead of letting it erase recording evidence.
     """
-    if isinstance(world.store, InMemoryStore):
-        request.applymarker(
-            pytest.mark.xfail(
-                strict=True,
-                reason="InMemoryStore.upsert_call replaces instead of merging; see CHANGELOG",
-            )
-        )
     call = await world.store.call(world.call_id)
     assert call is not None
 
@@ -402,6 +389,7 @@ async def test_an_approval_closes_with_who_decided_it(world: World) -> None:
     assert resolved is not None
     assert resolved.status is ApprovalStatus.APPROVED
     assert resolved.decided_by == "ops@volta.test"
+    assert resolved.decided_at is not None
     assert await world.store.open_approvals(str(world.order.id)) == []
 
 

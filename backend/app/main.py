@@ -18,20 +18,24 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from typing import cast
 
 import structlog
-from fastapi import APIRouter, FastAPI
+from fastapi import FastAPI
 
 from app import jobs
-from app.api.routes import create_api_router
+from app.agent.report import OpenAIReportModel
+from app.api import PortalStore, create_api_router
 from app.config import Settings, get_settings
-from app.domain import CallPlacer, Notifier, Store
+from app.domain import CallPlacer, DialPlan, Notifier, Store
 from app.notify.sender import NullNotifier, ResendTwilioNotifier
 from app.store.supabase import SupabaseStore
 from app.tools.calls import CallLedger
 from app.tools.commitments import CommitmentCoordinator
 from app.tools.market import Market
 from app.tools.model import ModelTools
+from app.vapi.assistant import build_assistant, profile_from_settings
+from app.vapi.campaign import run_campaign
 from app.vapi.client import VapiCallPlacer
 from app.vapi.toolserver import create_tool_router
 from app.vapi.webhook import create_webhook_router
@@ -50,7 +54,7 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def build_store(settings: Settings) -> Store:
+def build_store(settings: Settings) -> SupabaseStore:
     return SupabaseStore(settings)
 
 
@@ -70,7 +74,12 @@ def build_notifier(settings: Settings) -> Notifier:
     return NullNotifier()
 
 
-def build_tools(store: Store, notifier: Notifier) -> ModelTools:
+def build_tools(
+    store: Store,
+    *,
+    ledger: CallLedger,
+    commitments: CommitmentCoordinator,
+) -> ModelTools:
     """Assemble the model-facing surface from the pieces two tracks own.
 
     ModelTools takes the ledger and the coordinator rather than reaching for them, so the
@@ -80,29 +89,9 @@ def build_tools(store: Store, notifier: Notifier) -> ModelTools:
     return ModelTools(
         store,
         now=now_utc,
-        ledger=CallLedger(store, now=now_utc),
-        commitments=CommitmentCoordinator(store, notifier, now=now_utc),
+        ledger=ledger,
+        commitments=commitments,
     )
-
-
-def _mount(app: FastAPI, factory: object, prefix: str, owner: str) -> bool:
-    """Mount a router if its track has built it; log and carry on if it has not.
-
-    Tracks B and C land after this one, and their factories raise NotImplementedError until
-    they do. Letting that propagate would mean the server does not boot -- so the surface
-    that exists stays up, the clock keeps running, and the gap is named in the log rather
-    than hidden. This whole function disappears once CP4 and CP3 are in.
-    """
-    try:
-        router = factory()  # type: ignore[operator]
-    except NotImplementedError:
-        log.warning("router.not_built", prefix=prefix, owner=owner)
-        return False
-    if isinstance(router, APIRouter):
-        app.include_router(router, prefix=prefix)
-        return True
-    log.warning("router.not_a_router", prefix=prefix, owner=owner)
-    return False
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -111,22 +100,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     placer = build_placer(settings)
     notifier = build_notifier(settings)
 
-    # Built here so they exist for the routers to close over, and so a handler can never
-    # construct one of its own with a different clock.
+    ledger = CallLedger(store, now=now_utc)
+    commitments = CommitmentCoordinator(store, notifier, now=now_utc)
+    profile = profile_from_settings(settings)
+    reporter = OpenAIReportModel(
+        api_key=settings.openai_api_key,
+        model=settings.openai_report_model,
+    )
+    model_tools = build_tools(store, ledger=ledger, commitments=commitments)
+    market = Market(store, now=now_utc)
+
+    async def dial(
+        plans: list[DialPlan],
+        call_placer: CallPlacer,
+        call_settings: Settings,
+    ) -> dict[str, str]:
+        return await run_campaign(plans, call_placer, call_settings, profile=profile)
+
+    async def sweep() -> list[str]:
+        return await jobs.sweep_deadlines(store, placer, settings, now=now_utc, dial=dial)
+
+    # Built here so the same capability instances are injected into every router. In
+    # particular, webhook lifecycle events and model tools share one CallLedger.
     app_state = {
         "store": store,
         "placer": placer,
         "notifier": notifier,
-        "tools": build_tools(store, notifier),
-        "market": Market(store, now=now_utc),
-        "ledger": CallLedger(store, now=now_utc),
-        "commitments": CommitmentCoordinator(store, notifier, now=now_utc),
+        "tools": model_tools,
+        "market": market,
+        "ledger": ledger,
+        "commitments": commitments,
+        "profile": profile,
+        "reporter": reporter,
         "now": now_utc,
     }
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        task = asyncio.create_task(jobs.run_forever(store, placer, settings, now=now_utc))
+        task = asyncio.create_task(
+            jobs.run_forever(store, placer, settings, now=now_utc, dial=dial)
+        )
         log.info("jobs.started", interval_seconds=settings.sweep_interval_seconds)
         try:
             yield
@@ -142,9 +155,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok", "environment": settings.environment}
 
-    _mount(app, create_webhook_router, "/vapi", "Track B")
-    _mount(app, create_tool_router, "/vapi", "Track B")
-    _mount(app, create_api_router, "/api", "Track C")
+    app.include_router(
+        create_tool_router(model_tools, store, server_secret=settings.vapi_server_secret),
+        prefix="/vapi",
+    )
+    app.include_router(
+        create_webhook_router(
+            store=store,
+            ledger=ledger,
+            reporter=reporter,
+            profile=profile,
+            build_assistant_for=lambda context: build_assistant(profile, context, settings),
+            escalation_number=settings.escalation_phone_number,
+            server_secret=settings.vapi_server_secret,
+            now=now_utc,
+        ),
+        prefix="/vapi",
+    )
+    app.include_router(
+        create_api_router(
+            cast(PortalStore, store),
+            market=market,
+            sweep=sweep,
+            now=now_utc,
+            settings=settings,
+        ),
+        prefix="/api",
+    )
 
     return app
 

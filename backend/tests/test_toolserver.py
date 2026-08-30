@@ -16,6 +16,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.domain import CallDirection, CallRecord, Store
+from app.notify.sender import NullNotifier
+from app.tools.calls import CallLedger
+from app.tools.commitments import CommitmentCoordinator
 from app.tools.model import (
     ConfirmPreagreementArgs,
     LookupOrderArgs,
@@ -31,6 +34,10 @@ SECRET = "shared-secret-for-tests"
 VAPI_CALL_ID = "vapi-call-provisional-1"
 TOOL_CALL_ID = "toolu_01DTPAzUm5Gk3zxrpJ969oMF"
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+
+def _now() -> datetime:
+    return NOW
 
 
 # --------------------------------------------------------------------------------- doubles
@@ -51,7 +58,12 @@ class ScriptedTools(ModelTools):
         answer: str = "Recorded. Nothing is booked.",
         explode: BaseException | None = None,
     ) -> None:
-        super().__init__(store, now=lambda: NOW)
+        super().__init__(
+            store,
+            now=_now,
+            ledger=CallLedger(store, now=_now),
+            commitments=CommitmentCoordinator(store, NullNotifier(), now=_now),
+        )
         self._answer = answer
         self._explode = explode
         self.seen: list[tuple[str, str, Any]] = []
@@ -161,22 +173,23 @@ async def test_a_raising_handler_still_returns_200_with_an_error_string() -> Non
     assert result["error"].strip()
 
 
-async def test_an_unbuilt_handler_holds_instead_of_pretending() -> None:
-    """Track A's stubs raise NotImplementedError today. That must reach the agent as a hold.
-
-    This is the state the repo is actually in during a parallel build, so it is worth an
-    assertion rather than an assumption.
-    """
+async def test_an_incomplete_context_holds_instead_of_pretending() -> None:
+    """A missing order cannot become an authorization just because the server is reachable."""
     store = InMemoryStore()
     await _seed_call(store)
-    real_tools = ModelTools(store, now=lambda: NOW)
+    real_tools = ModelTools(
+        store,
+        now=_now,
+        ledger=CallLedger(store, now=_now),
+        commitments=CommitmentCoordinator(store, NullNotifier(), now=_now),
+    )
 
     code, body = await _post(real_tools, store, _envelope(_propose_quote_call()))
 
     assert code == 200
     (result,) = body["results"]
-    assert "error" in result
-    assert "result" not in result, "an unbuilt tool must never report something was recorded"
+    assert "result" in result
+    assert "recorded" not in result["result"].lower()
 
 
 async def test_the_error_string_never_claims_the_call_succeeded() -> None:

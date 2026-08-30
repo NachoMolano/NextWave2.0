@@ -15,7 +15,7 @@ Nothing here is importable from ``app`` -- these live in tests/ because a test d
 production tree eventually gets wired into production.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.domain import (
     Approval,
@@ -24,6 +24,7 @@ from app.domain import (
     CallContext,
     CallRecord,
     CallReport,
+    CallStatus,
     Carrier,
     Commitment,
     CommitmentState,
@@ -134,7 +135,31 @@ class InMemoryStore:
     async def upsert_call(self, call: CallRecord) -> str:
         existing = await self.call_by_vapi_id(call.vapi_call_id)
         call_id = existing.id if existing and existing.id else _next_id("call", self.calls)
-        self.calls[call_id] = call.model_copy(update={"id": call_id})
+        if existing is None:
+            self.calls[call_id] = call.model_copy(update={"id": call_id})
+            return call_id
+
+        update: dict[str, object] = {"id": call_id}
+        for field in (
+            "recording_url",
+            "ended_at",
+            "ended_reason",
+            "cost_cents",
+            "order_id",
+            "carrier_id",
+            "started_at",
+            "context",
+        ):
+            if getattr(call, field) in (None, {}, "") and getattr(existing, field):
+                update[field] = getattr(existing, field)
+        if not call.transcript and existing.transcript:
+            update["transcript"] = existing.transcript
+        if existing.identity_level > call.identity_level:
+            update["identity_level"] = existing.identity_level
+            update["identity_verified"] = existing.identity_verified
+        if existing.status is CallStatus.ENDED and call.status is not CallStatus.ENDED:
+            update["status"] = existing.status
+        self.calls[call_id] = call.model_copy(update=update)
         return call_id
 
     async def add_quote(self, quote: QuoteRow) -> str:
@@ -191,6 +216,7 @@ class InMemoryStore:
                 "status": ApprovalStatus(status),
                 "decided_by": decided_by,
                 "note": note,
+                "decided_at": datetime.now(UTC),
             }
         )
 
