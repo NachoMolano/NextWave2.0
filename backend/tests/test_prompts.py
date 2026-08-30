@@ -111,9 +111,61 @@ def test_rfq_greeting_asks_for_attention_not_a_price(
     greeting = build_greeting(profile, context.model_copy(update={"phase": CallPhase.RFQ}))
     lowered = greeting.lower()
 
-    assert "need road transport" in lowered
+    assert "quote a transport service" in lowered
     assert "rate" not in lowered
     assert "price" not in lowered
+
+
+def test_rfq_greeting_does_not_recite_the_load(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """It opened by listing cargo, lane, equipment and weight at a dispatcher who had not
+    yet said a word, which reads as a specification being read out rather than a call. The
+    agent knows all of it; the opening is not where it proves that."""
+    rfq = context.model_copy(
+        update={
+            "phase": CallPhase.RFQ,
+            "equipment": "40-foot container chassis",
+            "weight": "18 tonnes",
+            "pickup_window": "between September 2 and September 4, 2026",
+        }
+    )
+    details = [rfq.cargo, rfq.origin, rfq.destination, rfq.equipment, rfq.weight]
+    details.append(rfq.pickup_window)
+
+    # The company is called Pacific Textiles and the cargo is textiles, so the company name
+    # comes out before asking whether the load leaked into the opening.
+    def spoken(phase: CallPhase) -> str:
+        greeting = build_greeting(profile, rfq.model_copy(update={"phase": phase}))
+        return greeting.lower().replace(profile.display_name.lower(), "")
+
+    opening = spoken(CallPhase.RFQ)
+    for detail in details:
+        assert detail is not None
+        assert detail.lower() not in opening
+
+    # The other phases still name the load: a callback about "a load" is a wrong number.
+    for phase in (CallPhase.AWARD, CallPhase.RENEGOTIATION, CallPhase.STATUS_CHECK):
+        assert rfq.cargo is not None
+        assert rfq.cargo.lower() in spoken(phase)
+
+
+def test_rfq_gives_the_load_detail_only_as_it_is_asked_for(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """The opening turn dumped the whole operation block. Detail is answered, not offered."""
+    rfq = context.model_copy(update={"phase": CallPhase.RFQ})
+    prompt = build_system_prompt(profile, rfq).lower()
+    runtime = build_runtime_system_prompt(profile, rfq).lower()
+
+    for text in (prompt, runtime):
+        assert "let them ask what the service is" in text
+        assert "the lane in one short sentence" in text
+    # The phrase wraps in the long prompt, so each form gets the anchor that never splits.
+    assert "piece at a time, as they ask for it" in prompt
+    assert "never volunteer three facts" in prompt
+    assert "one piece at a time as they ask" in runtime
+    assert "never three facts where they asked for one" in runtime
 
 
 def test_rfq_requires_a_real_attempt_to_move_the_price(
