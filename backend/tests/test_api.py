@@ -104,18 +104,28 @@ class FakeMarket:
     ``plan_rfq`` returns plans the first time and nothing afterwards, which is what the real
     one does: the market is claimed by an idempotency key on the mandate version, so a second
     click on the same mandate plans nothing and therefore dials nobody.
+
+    It also moves the order to QUOTING once it has planned, because the real one does
+    (``Market.plan_rfq``, after the call rows exist) and that transition is now the only
+    thing that opens a market. A fake that skipped it would let a test assert an order was
+    "collecting quotes" in a world the real system never produces.
     """
 
-    def __init__(self, *, award_conflict: bool = False) -> None:
+    def __init__(
+        self, *, award_conflict: bool = False, store: PortalMemoryStore | None = None
+    ) -> None:
         self.planned: list[tuple[str, int]] = []
         self.awarded: list[str] = []
         self.award_conflict = award_conflict
+        self.store = store
 
     async def plan_rfq(self, order: Order, count: int) -> list[DialPlan]:
         already = any(planned == str(order.id) for planned, _ in self.planned)
         self.planned.append((str(order.id), count))
         if already:
             return []
+        if self.store is not None:
+            await self.store.set_order_status(str(order.id), OrderStatus.QUOTING)
         return [
             DialPlan(
                 call_id=f"call-{index}",
@@ -180,7 +190,7 @@ def build(
     dial: FakeDialler | None = None,
 ) -> tuple[TestClient, PortalMemoryStore, FakeMarket, FakeSweep, FakeDialler]:
     store = store or PortalMemoryStore()
-    market = market or FakeMarket()
+    market = market or FakeMarket(store=store)
     sweep = sweep or FakeSweep()
     dial = dial or FakeDialler()
     app = FastAPI()
@@ -301,8 +311,26 @@ def test_setting_a_mandate_bumps_the_version_and_records_who() -> None:
     assert body["mandate"]["is_granted"] is True
     assert body["mandate"]["cap"] == {"cents": 900_000, "currency": "USD"}
     assert body["mandate"]["set_by"] == "ops@volta.test"
-    assert body["order"]["status"] == "quoting"
     assert any(e.type == "mandate.set" for e in store.events.values())
+
+
+def test_granting_a_mandate_does_not_open_the_market_by_itself() -> None:
+    """Authority is not spend. Until a carrier is dialled the order has not moved.
+
+    The status used to flip to ``quoting`` here, which made an order with zero calls read as
+    "Volta is working" and hid the operator's own next action -- opening the market -- behind
+    a progress label. ``plan_rfq`` owns that transition, after the call rows exist.
+    """
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+
+    body = client.post(f"/api/orders/{order_id}/mandate", json=_mandate()).json()
+
+    assert body["order"]["status"] == "received"
+    assert body["mandate"]["is_granted"] is True
+    assert body["calls"] == []
+    assert body["next_action"]["actor"] == "operator"
+    assert body["next_action"]["label"] == "Open the market"
 
 
 def test_raising_the_cap_versions_it_rather_than_overwriting() -> None:
@@ -810,7 +838,10 @@ def test_portal_never_requires_a_bearer_token() -> None:
     client = _app_with(Settings())
 
     assert client.get("/api/orders").status_code == 200
-    assert client.get("/api/session").json()["actor"] == "portal-operator"
+    body = client.get("/api/session").json()
+    assert body["actor"] == "portal-operator"
+    # The authorize button names the number it is about to ring; it must come from settings.
+    assert body["rfq_carrier_count"] == 3
 
 
 def test_portal_uses_configured_audit_identity_without_login() -> None:

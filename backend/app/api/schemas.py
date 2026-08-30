@@ -316,3 +316,9 @@ class Session(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     actor: str = Field(description="Recorded against every mandate, award and profile change.")
+    #: How many carriers an RFQ dials. Exposed so the portal's authorize button can name the
+    #: number it is about to ring rather than saying "some carriers" or hardcoding a 3 that
+    #: drifts from `settings.rfq_carrier_count` the day somebody changes it.
+    rfq_carrier_count: int = Field(
+        ge=1, description="Carriers dialled when the market opens, from server settings."
+    )

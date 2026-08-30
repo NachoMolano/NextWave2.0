@@ -119,6 +119,13 @@ h3 { font-size: 20px; }
 .mandate-card .eyebrow { color: color-mix(in srgb, var(--sand) 60%, transparent); }
 .mandate-card strong { font-size: 20px; font-weight: 500; }
 .mandate-card > span:last-child { color: color-mix(in srgb, var(--sand) 68%, transparent); font-size: 11px; }
+.mandate-form { display: grid; gap: 13px; margin: 22px 0 16px; }
+.mandate-field { display: grid; gap: 4px; }
+.mandate-field .eyebrow { margin: 0; color: color-mix(in srgb, var(--sand) 60%, transparent); }
+.mandate-field .field { margin: 0; }
+.mandate-row { display: grid; grid-template-columns: 1fr 78px; gap: 8px; }
+.action-panel .field { color-scheme: dark; }
+.mandate-problem { margin: 0 0 16px; padding: 9px 11px; border-left: 2px solid var(--orange); background: color-mix(in srgb, var(--orange) 15%, transparent); color: var(--sand); font-size: 12px; line-height: 1.45; }
 .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 999px; padding: 12px 18px; font-size: 13px; font-weight: 700; transition: transform .2s ease, box-shadow .2s ease; }
 .primary-button { width: 100%; color: var(--navy); background: var(--green); }
 .primary-button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 9px 25px -9px color-mix(in srgb, var(--green) 88%, transparent); }

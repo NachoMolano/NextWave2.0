@@ -61,7 +61,6 @@ from app.domain import (
     EventRow,
     Money,
     Order,
-    OrderStatus,
     Store,
 )
 from app.store import AwardConflict, RowNotFound, StoreUnavailable
@@ -251,6 +250,12 @@ def create_api_router(
         Bumps the version rather than overwriting in place. Decisions copy the ceiling by
         value, so raising the cap here can never rewrite the explanation of a refusal that
         was made under the old one.
+
+        Deliberately leaves the status alone. Granting authority is not the same act as
+        spending it: `plan_rfq` is what moves an order to QUOTING, and it does so after the
+        call rows exist. Flipping the status here made an order read as "collecting quotes"
+        while nobody had been dialled, and hid the operator's own next action behind a
+        progress label.
         """
         order = await _load(order_id)
         if order.mandate_version != body.expected_version:
@@ -276,7 +281,6 @@ def create_api_router(
                 "mandate_version": order.mandate_version + 1,
                 "mandate_set_by": actor,
                 "mandate_set_at": now(),
-                "status": OrderStatus.QUOTING,
             }
         )
         with _guard():
@@ -443,7 +447,7 @@ def create_api_router(
     @router.get("/session", response_model=Session)
     async def get_session(actor: Annotated[str, Depends(portal_actor)]) -> Session:
         """The deployment identity recorded for portal actions."""
-        return Session(actor=actor)
+        return Session(actor=actor, rfq_carrier_count=settings.rfq_carrier_count)
 
     @router.put("/profile", response_model=BusinessProfile)
     async def update_profile(

@@ -16,6 +16,46 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T06:18-0500 · api, frontend · nacho
+
+**The operator could not say when.** The mandate form asked for a ceiling and a currency and
+nothing else -- the pickup window was hardcoded in `MandatePanel` to *now until two days from
+now*. An operator who wanted a Thursday pickup had no way to type Thursday, and every mandate
+in the system carried a window its grantor never chose. The form now takes the ceiling, an
+optional target and both ends of the window, validates them before sending, and reads an
+existing mandate back into its own fields when raising a cap.
+
+**`set_mandate` no longer flips the order to `QUOTING`.** Granting authority is not spending
+it. `Market.plan_rfq` already sets that status, after the call rows exist -- so the flip in the
+route was a second writer of the same transition, and it fired before anyone had been dialled.
+Two consequences, both visible on the demo screen: an order with zero calls read as *Volta is
+working · collecting quotes*, and the `Open the market` branch of `next_action` was unreachable
+dead code, so the operator was shown a progress label where their own next action belonged.
+`FakeMarket` in `tests/test_api.py` now performs the transition too; without it the suite was
+asserting a world the real store never produces.
+
+**Granting a mandate opens the market in the same gesture.** Still two requests, because they
+are two acts in the ledger and a dial that fails must not take the granted mandate with it --
+`act()` now reloads on failure as well as success so a half-completed gesture cannot leave the
+screen claiming nothing is authorized. Only a *first* grant dials; raising a ceiling records a
+version and rings nobody. `Session` gained `rfq_carrier_count` so the button can say
+*Authorize and dial 3 carriers* instead of hardcoding a 3 that drifts from settings.
+
+Also: `NextActionPanel` was rendered without `onAct` on the order page, so the screen's primary
+call to action had no button at all. And the market panel offered *Start quoting* on an already
+open market -- `plan_rfq` is claimed on the mandate version, so that press dialled nobody.
+
+Verified end to end in a browser against the in-memory store with `FakeDialler` -- no Supabase,
+no Vapi, no telephone. Mandate v1 recorded with the typed window, three numbers handed to the
+dialler, status `quoting` only afterwards. 341 passed / 16 skipped, `ruff` and `mypy` clean,
+frontend builds, `oxlint` clean.
+
+Affects: **Track C and anyone demoing the happy path.** The order no longer shows `quoting`
+until carriers have actually been dialled -- if you were reading that status as "mandate
+granted", read `mandate.is_granted` instead. `Session` grew a required field; the portal's
+`types.ts` is updated to match.
+
+
 ## 2026-08-30T03:09-0500 · vapi, tools, store, api, frontend · nacho/track-c
 
 Three things: a leak, the bug that was keeping the ledger empty, and the business profile.

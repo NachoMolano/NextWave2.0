@@ -19,6 +19,7 @@ import type {
   OrderSummary,
   QuoteRow,
   Session,
+  SetMandateRequest,
   TraceCategory,
   TraceResult,
   TraceRow,
@@ -87,6 +88,19 @@ function formatDay(value: string | null): string {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+/**
+ * A `datetime-local` input speaks the operator's wall clock and nothing else -- no zone, no
+ * offset. `toISOString` on the way back stamps the zone the browser is actually in, so a
+ * pickup window typed in Tampa arrives at the API as the instant that person meant.
+ */
+function toLocalInput(value: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}` +
+    `T${pad(value.getHours())}:${pad(value.getMinutes())}`
+  )
 }
 
 /** Anchors are what make a claim checkable, so they are rendered, not hidden. */
@@ -171,6 +185,7 @@ export default function App() {
         {route.name === 'order' && (
           <OrderDetail
             orderId={route.orderId}
+            carrierCount={session?.rfq_carrier_count ?? null}
             onBack={() => navigate('/')}
             onOpenCall={(callId) => navigate(`/orders/${route.orderId}/calls/${callId}`)}
           />
@@ -392,10 +407,12 @@ function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
 
 function OrderDetail({
   orderId,
+  carrierCount,
   onBack,
   onOpenCall,
 }: {
   orderId: string
+  carrierCount: number | null
   onBack: () => void
   onOpenCall: (callId: string) => void
 }) {
@@ -403,6 +420,10 @@ function OrderDetail({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ text: string; bad: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
+  // Lifted out of the panel so the next-action button at the top of the page can open the
+  // same form. Two buttons saying "Grant a mandate" that open different things is worse than
+  // one form with two ways in.
+  const [mandateFormOpen, setMandateFormOpen] = useState(false)
 
   const load = useCallback(() => {
     voltaApi
@@ -430,12 +451,15 @@ function OrderDetail({
       try {
         await run()
         setNotice({ text: what, bad: false })
-        load()
       } catch (e) {
         const err = e as ApiError
         setNotice({ text: err.message, bad: true })
       } finally {
         setBusy(false)
+        // Reloaded even when it threw. Granting a mandate and opening the market is two
+        // requests in one gesture, so a failure on the second leaves real state the first
+        // one wrote -- and a screen still showing "nothing is authorized" would be lying.
+        load()
       }
     },
     [load],
@@ -445,6 +469,37 @@ function OrderDetail({
   if (!data) return <Loading what="the operation" />
 
   const { order, mandate, demurrage, quotes, calls, commitment, approvals } = data
+
+  const openMarket = () =>
+    act('The market is open. Carriers are being dialled.', () => voltaApi.startRfq(orderId))
+
+  /**
+   * Step 4 and step 5 in one press, which is how an operator thinks about it: *quote this at
+   * this ceiling, for this window*. They stay two requests because they are two different
+   * acts in the ledger -- the mandate is authority and the RFQ is spending it -- and because
+   * a dial that fails must not take the granted mandate down with it.
+   */
+  const grantMandate = (body: SetMandateRequest, dial: boolean) => {
+    setMandateFormOpen(false)
+    const told = dial
+      ? `Mandate v${mandate.version + 1} recorded. ` +
+        `${carrierCount ?? 'The'} carriers are being dialled.`
+      : `Mandate v${mandate.version + 1} recorded. Nobody was dialled.`
+    return act(told, async () => {
+      await voltaApi.setMandate(orderId, body)
+      if (dial) await voltaApi.startRfq(orderId)
+    })
+  }
+
+  // The panel's own button is the only one wired for actions we can actually perform here.
+  // An approval is decided in its own card lower down, so offering a second button for it
+  // would be a control that scrolls somewhere rather than doing something.
+  const nextActionHandler =
+    data.next_action.label === 'Grant a mandate'
+      ? () => setMandateFormOpen(true)
+      : data.next_action.label === 'Open the market'
+        ? openMarket
+        : undefined
 
   return (
     <div className="page">
@@ -483,19 +538,16 @@ function OrderDetail({
       </div>
 
       <StageStrip action={data.next_action} />
-      <NextActionPanel action={data.next_action} />
+      <NextActionPanel action={data.next_action} onAct={nextActionHandler} />
 
       <div className="detail-grid">
         <div className="detail-main">
           <MarketPanel
             quotes={quotes}
             mandateGranted={mandate.is_granted}
+            marketOpen={order.status !== 'received'}
             busy={busy}
-            onStart={() =>
-              act('The market is open. Three carriers are being dialled.', () =>
-                voltaApi.startRfq(orderId),
-              )
-            }
+            onStart={openMarket}
           />
 
           <section className="surface call-section">
@@ -522,11 +574,10 @@ function OrderDetail({
           <MandatePanel
             mandate={mandate}
             busy={busy}
-            onSet={(body) =>
-              act(`Mandate v${mandate.version + 1} recorded.`, () =>
-                voltaApi.setMandate(orderId, body),
-              )
-            }
+            open={mandateFormOpen}
+            carrierCount={carrierCount}
+            onOpenChange={setMandateFormOpen}
+            onSubmit={grantMandate}
           />
 
           {approvals.length > 0 && (
@@ -560,34 +611,229 @@ function OrderDetail({
 
 /* ------------------------------------------------------------------ mandate */
 
-function MandatePanel({
+/**
+ * Where authority enters the system.
+ *
+ * Nothing else in Volta can write a price ceiling, and no carrier on a phone can reach this
+ * form. That is the whole architecture in one panel: the ceiling and the window are typed by
+ * a named person here, and every later refusal on a recorded line traces back to this row.
+ *
+ * The window is typed, not assumed. It used to be hardcoded to *now until two days from now*,
+ * which quietly authorized a pickup window nobody chose -- the operator saying "quote me for
+ * Thursday" had no way to say Thursday. A mandate carrying a window its grantor did not pick
+ * is not a mandate.
+ */
+/** Tomorrow morning to the evening after. A starting point to edit, never a default to accept. */
+function defaultWindow(mandate: MandateView): { from: string; until: string } {
+  const day = 24 * 3600 * 1000
+  const morning = new Date(Date.now() + day)
+  morning.setHours(8, 0, 0, 0)
+  const evening = new Date(Date.now() + 2 * day)
+  evening.setHours(18, 0, 0, 0)
+  return {
+    from: toLocalInput(
+      mandate.pickup_not_before ? new Date(mandate.pickup_not_before) : morning,
+    ),
+    until: toLocalInput(mandate.pickup_not_after ? new Date(mandate.pickup_not_after) : evening),
+  }
+}
+
+/**
+ * The fields themselves. Mounted only while the form is open, which is what lets every
+ * `useState` initialize straight from the mandate: opening the form *is* the event that
+ * seeds it, so there is no effect here synchronizing one piece of React state with another.
+ */
+function MandateForm({
   mandate,
   busy,
-  onSet,
+  firstGrant,
+  carrierCount,
+  onCancel,
+  onSubmit,
 }: {
   mandate: MandateView
   busy: boolean
-  onSet: (body: import('./types').SetMandateRequest) => void
+  firstGrant: boolean
+  carrierCount: number | null
+  onCancel: () => void
+  onSubmit: (body: SetMandateRequest, dial: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const [cap, setCap] = useState('9000')
-  const [currency, setCurrency] = useState('USD')
+  const seed = defaultWindow(mandate)
+  const [cap, setCap] = useState(() => (mandate.cap ? String(mandate.cap.cents / 100) : '9000'))
+  const [currency, setCurrency] = useState(() => mandate.cap?.currency ?? 'USD')
+  const [target, setTarget] = useState(() =>
+    mandate.target ? String(mandate.target.cents / 100) : '',
+  )
+  const [from, setFrom] = useState(seed.from)
+  const [until, setUntil] = useState(seed.until)
+  const [problem, setProblem] = useState<string | null>(null)
 
   const submit = () => {
-    const now = new Date()
-    const later = new Date(now.getTime() + 2 * 24 * 3600 * 1000)
-    onSet({
-      cap_amount_cents: Math.round(Number(cap) * 100),
-      cap_currency: currency.toUpperCase(),
-      target_amount_cents: null,
-      pickup_not_before: now.toISOString(),
-      pickup_not_after: later.toISOString(),
-      delivery_deadline: null,
-      commitment_mode: 'human_escalation',
-      expected_version: mandate.version,
-    })
-    setOpen(false)
+    const capCents = Math.round(Number(cap) * 100)
+    const targetCents = target.trim() ? Math.round(Number(target) * 100) : null
+    const startsAt = new Date(from)
+    const endsAt = new Date(until)
+
+    // Checked here so the operator is told which field is wrong instead of being handed a 422.
+    // The server validates the same things again; this is a courtesy, never the guard.
+    if (!Number.isFinite(capCents) || capCents <= 0) {
+      return setProblem('The ceiling has to be an amount above zero.')
+    }
+    if (targetCents !== null && (!Number.isFinite(targetCents) || targetCents <= 0)) {
+      return setProblem('A target has to be an amount above zero, or be left empty.')
+    }
+    if (targetCents !== null && targetCents > capCents) {
+      return setProblem('The target cannot sit above the ceiling it negotiates under.')
+    }
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+      return setProblem('Both ends of the pickup window need a date and a time.')
+    }
+    if (endsAt <= startsAt) {
+      return setProblem('The window has to end after it starts.')
+    }
+
+    setProblem(null)
+    onSubmit(
+      {
+        cap_amount_cents: capCents,
+        cap_currency: currency.toUpperCase(),
+        target_amount_cents: targetCents,
+        pickup_not_before: startsAt.toISOString(),
+        pickup_not_after: endsAt.toISOString(),
+        delivery_deadline: null,
+        commitment_mode: 'human_escalation',
+        expected_version: mandate.version,
+      },
+      firstGrant,
+    )
   }
+
+  const confirmLabel = !firstGrant
+    ? 'Raise the ceiling'
+    : carrierCount === null
+      ? 'Authorize and open the market'
+      : `Authorize and dial ${carrierCount} carriers`
+
+  return (
+    <>
+      <div className="mandate-form">
+        <div className="mandate-field">
+          <label className="eyebrow" htmlFor="cap">
+            Ceiling &mdash; never said out loud
+          </label>
+          <div className="mandate-row">
+            <input
+              id="cap"
+              className="field"
+              value={cap}
+              inputMode="decimal"
+              onChange={(e) => setCap(e.target.value)}
+            />
+            <input
+              id="currency"
+              className="field"
+              aria-label="Currency"
+              value={currency}
+              maxLength={3}
+              onChange={(e) => setCurrency(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="mandate-field">
+          <label className="eyebrow" htmlFor="target">
+            Target &mdash; what to aim for (optional)
+          </label>
+          <input
+            id="target"
+            className="field"
+            value={target}
+            inputMode="decimal"
+            placeholder="leave empty to only cap"
+            onChange={(e) => setTarget(e.target.value)}
+          />
+        </div>
+
+        <div className="mandate-field">
+          <label className="eyebrow" htmlFor="pickup-from">
+            Pickup no earlier than
+          </label>
+          <input
+            id="pickup-from"
+            className="field"
+            type="datetime-local"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+          />
+        </div>
+
+        <div className="mandate-field">
+          <label className="eyebrow" htmlFor="pickup-until">
+            Pickup no later than
+          </label>
+          <input
+            id="pickup-until"
+            className="field"
+            type="datetime-local"
+            value={until}
+            onChange={(e) => setUntil(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {problem && <p className="mandate-problem">{problem}</p>}
+
+      <p className="action-note">
+        {firstGrant
+          ? 'Granting this opens the market in the same gesture: the carriers are dialled ' +
+            'straight away and told the window, never the ceiling.'
+          : 'Raising the ceiling records a new version and dials nobody. Open the market ' +
+            'yourself when you want the new figure taken back out.'}
+      </p>
+
+      <div className="dialog-actions">
+        <button className="secondary-button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary-button" disabled={busy || !cap.trim()} onClick={submit}>
+          {confirmLabel}
+        </button>
+      </div>
+    </>
+  )
+}
+
+/**
+ * Where authority enters the system.
+ *
+ * Nothing else in Volta can write a price ceiling, and no carrier on a phone can reach this
+ * form. That is the whole architecture in one panel: the ceiling and the window are typed by
+ * a named person here, and every later refusal on a recorded line traces back to this row.
+ *
+ * The window is typed, not assumed. It used to be hardcoded to *now until two days from now*,
+ * which quietly authorized a pickup window nobody chose -- the operator saying "quote me for
+ * Thursday" had no way to say Thursday. A mandate carrying a window its grantor did not pick
+ * is not a mandate.
+ */
+function MandatePanel({
+  mandate,
+  busy,
+  open,
+  carrierCount,
+  onOpenChange,
+  onSubmit,
+}: {
+  mandate: MandateView
+  busy: boolean
+  open: boolean
+  /** `null` until /api/session answers -- the button must not guess a number it will dial. */
+  carrierCount: number | null
+  onOpenChange: (open: boolean) => void
+  onSubmit: (body: SetMandateRequest, dial: boolean) => void
+}) {
+  // A first grant opens the market in the same gesture; a raise does not. Re-dialling carriers
+  // who are mid-call because somebody moved the ceiling is a worse default than one more click.
+  const firstGrant = !mandate.is_granted
 
   return (
     <section className="action-panel">
@@ -599,6 +845,10 @@ function MandatePanel({
           <div className="mandate-card">
             <span className="eyebrow">Ceiling · version {mandate.version}</span>
             <strong>{formatMoney(mandate.cap)}</strong>
+            <span>
+              Pickup {formatDate(mandate.pickup_not_before)} &mdash;{' '}
+              {formatDate(mandate.pickup_not_after)}
+            </span>
             <span>
               Granted by {mandate.set_by} · {formatDate(mandate.set_at)}
             </span>
@@ -612,47 +862,22 @@ function MandatePanel({
       ) : (
         <p className="action-note">
           No mandate is not &ldquo;no limit&rdquo;. It is a permission nobody granted, and until
-          a person grants it the agent cannot open a market or agree to anything.
+          a person sets a ceiling and a pickup window the agent cannot open a market or agree to
+          anything.
         </p>
       )}
 
       {open ? (
-        <div className="mandate-card">
-          <label className="eyebrow" htmlFor="cap">
-            Ceiling
-          </label>
-          <input
-            id="cap"
-            className="field"
-            value={cap}
-            inputMode="decimal"
-            onChange={(e) => setCap(e.target.value)}
-          />
-          <label className="eyebrow" htmlFor="currency">
-            Currency
-          </label>
-          <input
-            id="currency"
-            className="field"
-            value={currency}
-            maxLength={3}
-            onChange={(e) => setCurrency(e.target.value)}
-          />
-          <div className="dialog-actions">
-            <button className="secondary-button" onClick={() => setOpen(false)}>
-              Cancel
-            </button>
-            <button
-              className="primary-button"
-              disabled={busy || !cap.trim()}
-              onClick={submit}
-            >
-              {mandate.is_granted ? 'Raise the ceiling' : 'Grant the mandate'}
-            </button>
-          </div>
-        </div>
+        <MandateForm
+          mandate={mandate}
+          busy={busy}
+          firstGrant={firstGrant}
+          carrierCount={carrierCount}
+          onCancel={() => onOpenChange(false)}
+          onSubmit={onSubmit}
+        />
       ) : (
-        <button className="primary-button" disabled={busy} onClick={() => setOpen(true)}>
+        <button className="primary-button" disabled={busy} onClick={() => onOpenChange(true)}>
           {mandate.is_granted ? 'Raise the ceiling' : 'Grant a mandate'}
         </button>
       )}
@@ -665,11 +890,14 @@ function MandatePanel({
 function MarketPanel({
   quotes,
   mandateGranted,
+  marketOpen,
   busy,
   onStart,
 }: {
   quotes: QuoteRow[]
   mandateGranted: boolean
+  /** Carriers have been dialled for this order. Nothing to do but wait for them to answer. */
+  marketOpen: boolean
   busy: boolean
   onStart: () => void
 }) {
@@ -692,15 +920,23 @@ function MarketPanel({
         <div className="empty-market">
           <strong>No quotes yet.</strong>
           <p>
-            {mandateGranted
-              ? 'Open the market to dial carriers in parallel.'
-              : 'A mandate has to exist before anyone is called.'}
+            {!mandateGranted
+              ? 'A mandate has to exist before anyone is called.'
+              : marketOpen
+                ? 'The market is open. Quotes appear here as carriers answer.'
+                : 'Open the market to dial carriers in parallel.'}
           </p>
-          <div className="offer-action">
-            <button className="secondary-button" disabled={!mandateGranted || busy} onClick={onStart}>
-              Start quoting
-            </button>
-          </div>
+          {!marketOpen && (
+            <div className="offer-action">
+              <button
+                className="secondary-button"
+                disabled={!mandateGranted || busy}
+                onClick={onStart}
+              >
+                Start quoting
+              </button>
+            </div>
+          )}
         </div>
       )}
 
