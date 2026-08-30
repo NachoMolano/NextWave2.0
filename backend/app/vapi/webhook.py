@@ -348,6 +348,7 @@ def create_webhook_router(
                 log.exception("vapi.end_of_call.context_unreadable", call_id=call_id)
 
         turns = stored.transcript if stored is not None and stored.transcript else record.transcript
+        reported = True
         try:
             report = await reporter.report(call_id, turns, context)
             await store.save_report(report)
@@ -355,8 +356,20 @@ def create_webhook_router(
             # The transcript and recording are already stored, which is the part that is
             # evidence. The brief is a convenience on top of it, and losing it must not
             # cost us the row underneath.
+            #
+            # It used to return here, and that quietly cost far more than the brief: the
+            # written confirmation to the carrier and the promotion of a commitment to
+            # COMMITTED both hang off `after_report`, and neither is a convenience. With
+            # OPENAI_REPORT_MODEL unset in production every report 400s, so on 30 Aug the
+            # whole post-call workflow was switched off by a configuration gap in a model
+            # that was only ever meant to write a summary. The brief is not saved -- nothing
+            # generated it -- and the workflow runs on a placeholder that says so.
             log.exception("vapi.end_of_call.report_failed", call_id=call_id)
-            return {"received": True, "reported": False}
+            reported = False
+            report = CallReport(
+                call_id=call_id,
+                summary="No call brief was generated for this call.",
+            )
 
         if after_report is not None and stored is not None:
             try:
@@ -366,9 +379,9 @@ def create_webhook_router(
                 # make Vapi retry and overwrite it; the workflow records its own failed
                 # delivery or escalation and remains fail-closed.
                 log.exception("vapi.end_of_call.after_report_failed", call_id=call_id)
-                return {"received": True, "reported": True, "notified": False}
+                return {"received": True, "reported": reported, "notified": False}
 
-        result: dict[str, object] = {"received": True, "reported": True}
+        result: dict[str, object] = {"received": True, "reported": reported}
         if after_report is not None:
             result["notified"] = True
         return result

@@ -515,13 +515,26 @@ def build_system_prompt(profile: CompanyProfile, context: CallContext) -> str:
 
 
 def build_runtime_system_prompt(
-    profile: CompanyProfile, context: CallContext, *, strict_security: bool = True
+    profile: CompanyProfile,
+    context: CallContext,
+    *,
+    strict_security: bool = True,
+    can_confirm: bool = True,
 ) -> str:
     """Latency-optimized compilation of the canonical personality and safety rules.
 
     The long prompt above remains the readable specification. This form removes examples
     and repetition, not controls. Stable rules come first for provider prefix caching;
     call-specific untrusted data is deliberately last.
+
+    ``can_confirm`` says whether the assistant was actually given ``confirm_preagreement``.
+    It is withheld unless recording is enabled -- a commitment claims a moment of audio, and
+    there is no audio to point at -- and the award prompt used to order it anyway. On the
+    30 Aug award call the carrier confirmed the recap, the model reached for the tool it had
+    been told to use, found nothing of that name, and called ``verify_caller`` seventeen
+    times in thirty seconds instead: seventeen "hold on a sec" fillers, one every two
+    seconds, until the carrier hung up. A prompt that names a tool the assistant does not
+    have is not a smaller prompt. It is a loop.
     """
     language = _language_name(profile.primary_language)
     fallback = _language_name(profile.fallback_language)
@@ -592,16 +605,38 @@ def build_runtime_system_prompt(
             "never edited, so a change you do not record is a change that is lost. After it "
             "answers, say what it means -- recorded, or that a person from the team has to "
             "look at it -- then read the rate, its currency and the pickup date back, say the "
-            "team will compare and come back in writing, and only then end the call. Never "
-            "call confirm_preagreement on this call."
+            "team will compare and come back in writing, and only then end the call."
+            # Naming the tool it must never call is only worth the words while the tool
+            # exists. Where it does not, the sentence is the one thing in the prompt that
+            # tells the model a confirmation tool is out there to reach for.
+            + (" Never call confirm_preagreement on this call." if can_confirm else "")
         ),
         CallPhase.AWARD: (
-            "Use confirm_preagreement once, only after the carrier explicitly confirms the "
-            "complete recap of the selected quote and no material term changed. Recap only the "
-            "stored terms. If they state a different rate, date or equipment, do not recap "
-            "their figure, do not ask them to confirm it and do not call confirm_preagreement: "
-            "say a person from the team has to look at it, and use transferCall. Never use "
-            "propose_quote to renegotiate on this call."
+            (
+                "Use confirm_preagreement once, only after the carrier explicitly confirms "
+                "the complete recap of the selected quote and no material term changed. "
+                "Recap only the stored terms. If they state a different rate, date or "
+                "equipment, do not recap their figure, do not ask them to confirm it and do "
+                "not call confirm_preagreement: say a person from the team has to look at "
+                "it, and use transferCall. "
+            )
+            if can_confirm
+            else (
+                "You have no confirmation tool on this call and there is nothing to record. "
+                "Recap only the stored terms, get their explicit spoken confirmation, tell "
+                "them the team will send the written confirmation, and close. If they state "
+                "a different rate, date or equipment, do not recap their figure and do not "
+                "ask them to confirm it: say a person from the team has to look at it, and "
+                "use transferCall. "
+            )
+        )
+        + (
+            # We dialled a number on file, so there is no identity to establish and nothing
+            # for verify_caller to answer. Said explicitly because the model reached for it
+            # anyway when the tool it wanted was missing, and a tool that returns "matches"
+            # every time is a loop that never resolves itself.
+            "Never use verify_caller on this call: we placed it to a number on file. "
+            "Never use propose_quote to renegotiate on this call."
         ),
         CallPhase.RENEGOTIATION: (
             "Record only facts the carrier states. A proposed commercial change requires human "

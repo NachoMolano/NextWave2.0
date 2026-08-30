@@ -434,6 +434,10 @@ def build_assistant(
                         profile,
                         context,
                         strict_security=settings.strict_conversation_security,
+                        # The same flag that decides whether the tool is in the list below.
+                        # Read from one place so the prompt cannot order what we did not give
+                        # it -- the two drifted apart once, and it cost a live award call.
+                        can_confirm=settings.recording_enabled,
                     ),
                 }
             ],

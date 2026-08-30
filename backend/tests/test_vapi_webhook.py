@@ -364,6 +364,40 @@ async def test_a_failing_report_model_keeps_the_transcript_it_already_stored() -
     assert store.reports == {}
 
 
+async def test_a_failing_report_model_does_not_switch_off_the_post_call_workflow() -> None:
+    """The brief is a convenience. The confirmation email and the commitment are not.
+
+    Both hang off ``after_report``, and a failed report used to return before it. With
+    OPENAI_REPORT_MODEL unset every report 400s, so one missing configuration value silently
+    disabled every written confirmation this system exists to send.
+    """
+
+    class BrokenReporter(ScriptedReportModel):
+        async def report(self, call_id: str, turns: list[Turn], context: CallContext) -> CallReport:
+            raise RuntimeError("the extraction model is down")
+
+    store = InMemoryStore()
+    ledger = RecordingLedger(store)
+    seen: list[CallReport] = []
+
+    async def after_report(call: CallRecord, report: CallReport) -> None:
+        seen.append(report)
+
+    code, body = await _post(
+        _fixture("end_of_call_report.json"),
+        store,
+        ledger,
+        reporter=BrokenReporter(),
+        after_report=after_report,
+    )
+
+    assert code == 200
+    assert body == {"received": True, "reported": False, "notified": True}
+    assert len(seen) == 1, "the workflow ran on a placeholder rather than not at all"
+    assert seen[0].summary == "No call brief was generated for this call."
+    assert store.reports == {}, "nothing generated a brief, so none was stored"
+
+
 # ------------------------------------------------------------------------ assistant-request
 
 
