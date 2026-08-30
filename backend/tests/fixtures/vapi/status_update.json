@@ -1,0 +1,12 @@
+{
+  "_status": "PROVISIONAL - written from docs.vapi.ai/server-url/events, not captured",
+  "message": {
+    "type": "status-update",
+    "status": "in-progress",
+    "call": {
+      "id": "vapi-call-provisional-1",
+      "type": "outboundPhoneCall",
+      "customer": { "number": "+523312345678" }
+    }
+  }
+}

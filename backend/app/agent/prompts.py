@@ -28,9 +28,7 @@ two translations that drift.
 import re
 from decimal import Decimal
 
-from app.domain import CompanyProfile
-
-from .context import CallContext, CallPhase
+from app.domain import CallContext, CallPhase, CompanyProfile
 
 __all__ = [
     "DEMO_CONTEXT",
