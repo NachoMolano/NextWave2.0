@@ -16,6 +16,36 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T00:59-0500 · domain/ports · tools · nacho/claude
+
+Three signature changes, announced before the code. Tracks A and E start against them.
+
+- **`app/domain/ports.py` — two additive `Store` reads.** No existing signature changed.
+  - `orders_in_status(status) -> list[Order]`. The RFQ timeout sweep in `jobs.py` has to
+    find markets still open in `quoting`, and `due_for_chase` only answers the
+    delivery-deadline question.
+  - `commitment(commitment_id) -> Commitment | None`. `Store` already had `quote`, `call`
+    and `approval` getters and no commitment one; the recap gate and renegotiation both
+    read a row *after* it has left the live slot, which `live_commitment` cannot return.
+
+  Both implemented in `tests/fakes.py::InMemoryStore` in the same commit, so nothing is red
+  while they wait. **I also added the two matching `raise NotImplementedError` stubs to
+  `store/supabase.py`** — not the implementations, just the stubs, because
+  `test_seam.py::test_implements_its_protocol` checks `SupabaseStore` against the Protocol
+  by name and `main` would otherwise be red for everyone until Track C picked this up. No
+  Track C logic was touched.
+  → Affects: **Track C** — implement both in `store/supabase.py` before CP3.
+- **`app/tools/commitments.py` — `send_recap_and_promote(commitment_id, message)`** now takes
+  the rendered `OutboundMessage`. The recap gate stays in Track A; the wording stays in Track
+  D's `notify/render.py`. Track A must not import a renderer, and the alternative was
+  `tools/` reaching into `notify/` for prose.
+  → Affects: **Track D** (supplies the message), **Track E** (the wiring in `main.py`).
+- **`app/tools/model.py` — `ModelTools.__init__`** gains `ledger: CallLedger` and
+  `commitments: CommitmentCoordinator`. `propose_quote` needs the server-side audio anchor,
+  and `confirm_preagreement` must not be a second writer of the `commitments` table. Both are
+  inside `tools/`, so no layering row moves.
+  → Affects: **Track B** — `vapi/toolserver.py` constructs `ModelTools`.
+
 ## 2026-08-30T00:48-0500 · phase-0 · nacho/claude
 
 Phase 0. The repo, the seams, and the schema — everything four tracks build against.

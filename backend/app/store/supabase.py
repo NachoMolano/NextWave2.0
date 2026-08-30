@@ -83,7 +83,13 @@ class SupabaseStore:
     async def live_commitment(self, order_id: str) -> Commitment | None:
         raise NotImplementedError(_UNIMPLEMENTED)
 
+    async def commitment(self, commitment_id: str) -> Commitment | None:
+        raise NotImplementedError(_UNIMPLEMENTED)
+
     async def due_for_chase(self, now: datetime) -> list[Order]:
+        raise NotImplementedError(_UNIMPLEMENTED)
+
+    async def orders_in_status(self, status: OrderStatus) -> list[Order]:
         raise NotImplementedError(_UNIMPLEMENTED)
 
     async def upsert_call(self, call: CallRecord) -> str:
