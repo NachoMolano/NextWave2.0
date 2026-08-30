@@ -160,6 +160,8 @@ export interface QuoteRow {
   components: Record<string, unknown>[]
   cost_is_final: boolean
   pickup_at: string
+  /** The carrier named a day, not a moment. Render it as a date; policy judges it as one. */
+  pickup_is_date_only: boolean
   pickup_window_end: string | null
   equipment: string
   valid_until: string

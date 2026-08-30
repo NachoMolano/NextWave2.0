@@ -219,8 +219,6 @@ async def test_a_call_that_never_started_is_closed_when_the_market_closes() -> N
 
     assert await jobs.timeout_open_markets(store, SETTINGS, now=now) == ["order-1"]
 
-    # Only the RFQ calls: closing the market also plans a renegotiation round, whose fresh
-    # call rows are correctly queued and must not be touched.
     rfq = [c for c in await store.calls_for("order-1") if c.phase == "rfq"]
     assert [c.status for c in rfq] == [CallStatus.FAILED]
     assert all(c.ended_at == NOW for c in rfq)
@@ -270,18 +268,16 @@ async def test_a_quote_less_active_carrier_keeps_the_first_round_open() -> None:
     assert not store.approvals
 
 
-async def test_finished_renegotiation_is_compared_alerted_and_sent_for_approval() -> None:
+async def test_a_closed_market_dials_nobody_a_second_time() -> None:
+    """One round. The improvement pass happens inside the call, not in a second one.
+
+    Closing the market used to plan a renegotiation round and ring every carrier again,
+    seconds after the first call ended. What follows a closed market is a person choosing --
+    and the comparison they see must be ranked on the last thing each carrier actually said,
+    not overtaken by quotes from calls placed after the ranking was frozen.
+    """
     store = quoting_world(call_status=CallStatus.ENDED, started_at=NOW - timedelta(minutes=5))
-    store.calls["call-2"] = CallRecord(
-        id="call-2",
-        vapi_call_id="vapi-2",
-        direction=CallDirection.OUTBOUND,
-        phase=CallPhase.RENEGOTIATION.value,
-        status=CallStatus.ENDED,
-        order_id="order-1",
-        carrier_id="carrier-1",
-        started_at=NOW - timedelta(minutes=2),
-    )
+    before = {call.id for call in await store.calls_for("order-1")}
     alerted: list[str] = []
 
     async def alert(comparison: Comparison, approval: Approval) -> None:
@@ -291,6 +287,7 @@ async def test_finished_renegotiation_is_compared_alerted_and_sent_for_approval(
 
     assert ranked == ["order-1"]
     assert alerted == ["quote-1:approval-1"]
+    assert {call.id for call in await store.calls_for("order-1")} == before, "nobody was re-dialled"
     current = await store.order("order-1")
     assert current is not None and current.status is OrderStatus.AWAITING_APPROVAL
 

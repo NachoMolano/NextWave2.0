@@ -146,6 +146,25 @@ def build_after_report(
                 or commitment.state is not CommitmentState.VERBAL
                 or commitment.evidence_call_id != call.id
             ):
+                # The award call ended and confirmed nothing. That is a legitimate outcome --
+                # the carrier's terms had changed, the recap was never assented to -- but it
+                # used to return here in silence, leaving the order in AWARDING, the carrier
+                # never confirmed, no email owed to anybody, and a portal with nothing on it
+                # to say so. The only person who can move it now is a person, so say so.
+                await raise_notification_escalation(
+                    call,
+                    "the award call ended with no confirmed pre-agreement; nothing is "
+                    "committed and no written confirmation was sent",
+                )
+                await store.append_event(
+                    EventRow(
+                        order_id=call.order_id,
+                        call_id=call.id,
+                        type="award.unconfirmed",
+                        payload={"call_id": call.id or ""},
+                        idempotency_key=f"award-unconfirmed:{call.id}",
+                    )
+                )
                 return
             carrier = await store.carrier(call.carrier_id) if call.carrier_id else None
             if carrier is None or not carrier.email:

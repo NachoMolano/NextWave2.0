@@ -87,6 +87,25 @@ function formatDate(value: string | null): string {
   })
 }
 
+/**
+ * A pickup, rendered as the kind of thing the carrier actually said.
+ *
+ * A date with no clock time is stored at midnight UTC, and `formatDate` turned that into
+ * "05 Sept, 19:00" for an operator five hours west -- a day early, at an hour nobody said,
+ * sitting next to a refusal about a window that ends at 18:00. Read in UTC and shown as a
+ * bare date, it says what was heard: the sixth.
+ */
+function formatPickup(quote: { pickup_at: string; pickup_is_date_only: boolean }): string {
+  if (!quote.pickup_is_date_only) return formatDate(quote.pickup_at)
+  const parsed = new Date(quote.pickup_at)
+  if (Number.isNaN(parsed.getTime())) return quote.pickup_at
+  return parsed.toLocaleDateString('en-GB', {
+    timeZone: 'UTC',
+    day: '2-digit',
+    month: 'short',
+  })
+}
+
 function formatDay(value: string | null): string {
   if (!value) return '—'
   const parsed = new Date(value)
@@ -573,7 +592,6 @@ function OrderDetail({
   // quote, a call and an escalation all name the same counterparty the same way.
   const carrierName = (carrierId: string) =>
     carriers.find((c) => c.id === carrierId)?.name ?? 'Carrier not on file'
-  const quoteById = new Map(quotes.map((q) => [String(q.id), q]))
 
   const openMarket = () =>
     act('The market is open. Carriers are being dialled.', () => voltaApi.startRfq(orderId))
@@ -596,16 +614,16 @@ function OrderDetail({
     })
   }
 
-  // An award approval carries the whole ranked comparison in its context, so it is the
-  // decision surface rather than a rail card. Everything else waiting on a person -- an
-  // escalation, an incident -- stays in the rail: those are notices, not a choice between
-  // priced options.
+  // An award approval carries the whole ranked comparison in its context, and it is the only
+  // thing on this page a person decides. The escalations that used to sit beside it in the
+  // rail -- one card per refused quote, each offering to "approve" something approving
+  // authorizes nothing -- said again, smaller, what the comparison already says with the
+  // action attached. They are still raised, still audited, and still listed in the Approvals
+  // inbox; they are not a second decision surface on the screen that holds the first.
   //
   // The newest ranking with something in it wins. `find` used to take the first award
   // approval of any shape, so one empty ranking left over from a market where nobody quoted
-  // suppressed the comparison entirely: the decision surface vanished and every approval,
-  // award included, fell into the rail as an Approve button with no carrier attached. That
-  // is the screen this is written against.
+  // suppressed the comparison entirely and the page had no decision on it at all.
   const awardDecision =
     approvals
       .filter((a) => a.kind === 'award_approval')
@@ -617,7 +635,6 @@ function OrderDetail({
       .sort((a, b) =>
         String(b.approval.raised_at ?? '').localeCompare(String(a.approval.raised_at ?? '')),
       )[0] ?? null
-  const railApprovals = approvals.filter((a) => a.id !== awardDecision?.approval.id)
 
   // The panel's own button is the only one wired for actions we can actually perform here.
   // An approval is decided in its own card lower down, so offering a second button for it
@@ -748,40 +765,6 @@ function OrderDetail({
             onOpenChange={setMandateFormOpen}
             onSubmit={grantMandate}
           />
-
-          {railApprovals.length > 0 && (
-            <section className="surface assignment-card">
-              <p className="eyebrow">Waiting on a person</p>
-              {/* Not "to decide". Awarding is decided on the comparison; what is left here is
-                  things a person needs to have seen, and a count promising decisions next to
-                  a column of notices is how the rail read as nonsense in the first place. */}
-              <h2>{railApprovals.length} to acknowledge</h2>
-              {railApprovals.map((approval) => {
-                const about =
-                  typeof approval.context.quote_id === 'string'
-                    ? (quoteById.get(approval.context.quote_id) ?? null)
-                    : null
-                return (
-                  <ApprovalCard
-                    key={approval.id}
-                    approval={approval}
-                    quote={about}
-                    carrier={about ? carrierName(about.carrier_id) : null}
-                    busy={busy}
-                    onRaiseCeiling={() => setMandateFormOpen(true)}
-                    onHandle={() =>
-                      act('Marked handled. Nothing was authorized.', () =>
-                        voltaApi.decideApproval(String(approval.id), {
-                          status: 'handled',
-                          note: null,
-                        }),
-                      )
-                    }
-                  />
-                )
-              })}
-            </section>
-          )}
 
           <CommitmentCard commitment={commitment} />
         </div>
@@ -1171,7 +1154,7 @@ function QuoteCard({ quote, carrier }: { quote: QuoteRow; carrier: string }) {
       <div className="offer-metrics">
         <div>
           <span>Pickup</span>
-          <strong>{formatDate(quote.pickup_at)}</strong>
+          <strong>{formatPickup(quote)}</strong>
         </div>
         <div>
           <span>Equipment</span>
@@ -1448,7 +1431,7 @@ function ComparisonPanel({
               <div className="decision-metrics">
                 <div>
                   <span>Pickup</span>
-                  <strong>{formatDate(entry.pickup_at)}</strong>
+                  <strong>{quote ? formatPickup(quote) : formatDate(entry.pickup_at)}</strong>
                 </div>
                 <div>
                   <span>Equipment</span>
@@ -1516,7 +1499,9 @@ function ComparisonPanel({
           )
         })}
 
-        {refused.map((entry) => (
+        {refused.map((entry) => {
+          const quote = byQuote.get(entry.quote_id)
+          return (
           <article key={entry.quote_id} className="decision-row decision-row-refused">
             <div className="decision-row-head">
               <div>
@@ -1527,7 +1512,7 @@ function ComparisonPanel({
               </div>
               <div className="decision-price">
                 <strong>{formatMoney(entry.amount)}</strong>
-                <small>pickup {formatDate(entry.pickup_at)}</small>
+                <small>pickup {quote ? formatPickup(quote) : formatDate(entry.pickup_at)}</small>
               </div>
             </div>
             {/* No action. A refused quote is not a choice -- it is an explanation, and the
@@ -1541,7 +1526,8 @@ function ComparisonPanel({
               </div>
             )}
           </article>
-        ))}
+          )
+        })}
       </div>
 
       <div className="decision-footer">
@@ -1567,87 +1553,6 @@ function ComparisonPanel({
 
 /* --------------------------------------------------------------- approvals */
 
-
-/** Plain language for what is waiting. The reason code is the audit record; this is the
- *  sentence an operator can act on, and the two are not the same thing. */
-const ESCALATION_COPY: Record<string, string> = {
-  outside_mandate: 'A carrier quoted above the ceiling',
-  policy_failure: 'A quote could not be authorized',
-  identity_unverified: 'The caller could not prove who they were',
-  direct_request: 'The caller asked for a person',
-  conflicting_information: 'What was said contradicts what we hold',
-  deadline_breach: 'The deadline passed with nothing underway',
-  carrier_reported_incident: 'A carrier reported an incident',
-  no_eligible_candidate: 'The market produced nothing to award',
-  award_selected: 'A ranking is waiting on the comparison above',
-}
-
-/**
- * One notice in the rail. A notice, not a decision.
- *
- * This card used to offer Approve and Reject on every row, which read -- next to an
- * escalation saying *outside mandate* -- as an offer to authorize the over-cap quote. It was
- * not: approving an escalation resolves the row and grants nothing, and a button whose label
- * promises authority it does not carry is worse than no button. The only thing a person can
- * do to an escalation from here is say they have seen it.
- *
- * Awarding lives on the comparison, where the options are priced and the action sits on the
- * carrier it acts on. An award request that reaches the rail is one with no comparison left
- * in it, so it offers the same acknowledgement and no more.
- */
-function ApprovalCard({
-  approval,
-  quote,
-  carrier,
-  busy,
-  onHandle,
-  onRaiseCeiling,
-}: {
-  approval: Approval
-  /** The quote this is about, when it is about one. */
-  quote: QuoteRow | null
-  carrier: string | null
-  busy: boolean
-  onHandle: () => void
-  onRaiseCeiling: () => void
-}) {
-  const reasonCode =
-    typeof approval.context.reason_code === 'string' ? approval.context.reason_code : null
-  const detail = typeof approval.context.detail === 'string' ? approval.context.detail : null
-
-  return (
-    <div className="snapshot">
-      <strong>{ESCALATION_COPY[approval.reason] ?? humanise(approval.reason)}</strong>
-      {quote && (
-        <span>
-          {carrier ?? 'Carrier not on file'} · {formatMoney(quote.amount)} · pickup{' '}
-          {formatDate(quote.pickup_at)}
-        </span>
-      )}
-      {reasonCode && <span>{REFUSAL_COPY[reasonCode] ?? humanise(reasonCode)}</span>}
-      {detail && <span>{detail}</span>}
-      <small>
-        {humanise(approval.kind)} · raised {formatDate(approval.raised_at)}
-      </small>
-      <p className="decision-context">
-        {approval.kind === 'award_approval'
-          ? 'This ranking has no carrier left to award. Reopen the market to quote again.'
-          : 'Acknowledging this changes no authority. Awarding happens on the comparison; ' +
-            'raising the ceiling is its own act, with its own version.'}
-      </p>
-      <div className="dialog-actions">
-        {approval.reason === 'outside_mandate' && (
-          <button className="secondary-button" disabled={busy} onClick={onRaiseCeiling}>
-            Raise the ceiling
-          </button>
-        )}
-        <button className="secondary-button" disabled={busy} onClick={onHandle}>
-          Mark handled
-        </button>
-      </div>
-    </div>
-  )
-}
 
 function ApprovalsPage({ onOpen }: { onOpen: (orderId: string) => void }) {
   const [approvals, setApprovals] = useState<Approval[] | null>(null)

@@ -284,6 +284,7 @@ def _quote_row(quote: QuoteRow) -> dict[str, Any]:
         "components": quote.components,
         "cost_is_final": quote.cost_is_final,
         "pickup_at": _iso(quote.pickup_at),
+        "pickup_is_date_only": quote.pickup_is_date_only,
         "pickup_window_end": _iso(quote.pickup_window_end),
         "equipment": quote.equipment,
         "valid_until": _iso(quote.valid_until),
