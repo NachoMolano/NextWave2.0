@@ -12,6 +12,9 @@ import type {
   OrderAggregate,
   OrderSummary,
   QuoteRow,
+  TraceCategory,
+  TraceResult,
+  TraceRow,
 } from './types'
 
 /* ------------------------------------------------------------------ routing */
@@ -856,6 +859,144 @@ function CallRow({ call, onOpen }: { call: CallRecord; onOpen: () => void }) {
   )
 }
 
+
+/* --------------------------------------------------------------- decision trace */
+
+const TRACE_FILTERS: { key: 'all' | TraceCategory; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'conversation', label: 'Conversation' },
+  { key: 'decision', label: 'Decision' },
+  { key: 'tool', label: 'Tool' },
+  { key: 'action', label: 'Action' },
+]
+
+// Quote and Policy stay categories without earning a filter button. They are the rows a
+// reader wants in place, in order, next to what caused them -- pulling them out of the
+// sequence would break the story the trace exists to tell.
+
+const RESULT_TONE: Record<TraceResult, string> = {
+  continue: 'neutral',
+  proposed: 'neutral',
+  allowed: 'teal',
+  authorized: 'teal',
+  clarify: 'amber',
+  escalate: 'amber',
+  in_progress: 'amber',
+  denied: 'red',
+  failed: 'red',
+  completed: 'green',
+  not_executed: 'dim',
+  unknown: 'dim',
+}
+
+const CATEGORY_MARK: Record<TraceCategory, string> = {
+  conversation: '💬',
+  quote: '🏷',
+  policy: '🛡',
+  decision: '⚖',
+  tool: '🔧',
+  action: '▶',
+}
+
+function DecisionTrace({ callId }: { callId: string }) {
+  const [rows, setRows] = useState<TraceRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [filter, setFilter] = useState<'all' | TraceCategory>('all')
+  const [query, setQuery] = useState('')
+
+  const load = useCallback(() => {
+    voltaApi
+      .getTrace(callId)
+      .then((value) => {
+        setRows(value)
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [callId])
+
+  useEffect(load, [load])
+
+  if (error) return <p className="empty-copy">{error}</p>
+  if (!rows) return <Loading what="the trace" />
+
+  const needle = query.trim().toLowerCase()
+  const shown = rows.filter((row) => {
+    if (filter !== 'all' && row.category !== filter) return false
+    if (!needle) return true
+    return `${row.counterparty} ${row.volta} ${row.reason_code ?? ''}`.toLowerCase().includes(needle)
+  })
+
+  return (
+    <section className="trace">
+      <div className="trace-controls">
+        <div className="trace-filters">
+          {TRACE_FILTERS.map((option) => (
+            <button
+              key={option.key}
+              className={filter === option.key ? 'trace-filter trace-filter-active' : 'trace-filter'}
+              onClick={() => setFilter(option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <input
+          className="field trace-search"
+          value={query}
+          placeholder="Search trace"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {shown.length === 0 ? (
+        <p className="empty-copy">Nothing recorded under that filter.</p>
+      ) : (
+        <table className="trace-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Category</th>
+              <th>Counterparty</th>
+              <th>Volta</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((row, index) => (
+              <tr key={index}>
+                {/* The row shows call-relative time; the exact clock time is on hover,
+                    because "00:34" is what you compare against a recording. */}
+                <td className="trace-time" title={new Date(row.at).toISOString()}>
+                  {formatOffset(row.offset_ms)}
+                </td>
+                <td className="trace-category">
+                  <span aria-hidden="true">{CATEGORY_MARK[row.category]}</span>
+                  {row.category}
+                </td>
+                <td>{row.counterparty}</td>
+                <td>
+                  {row.volta}
+                  {row.reason_code && (
+                    <span className="trace-reason">Policy: {row.reason_code}</span>
+                  )}
+                  {row.provenance && <span className="trace-provenance">{row.provenance}</span>}
+                </td>
+                <td>
+                  <span className={`trace-result trace-${RESULT_TONE[row.result]}`}>
+                    {humanise(row.result)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <p className="trace-footer">Append-only evidence · Model output is never authority</p>
+    </section>
+  )
+}
+
 function CallEvidencePage({ callId, onBack }: { callId: string; onBack: () => void }) {
   const [detail, setDetail] = useState<CallDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -876,6 +1017,13 @@ function CallEvidencePage({ callId, onBack }: { callId: string; onBack: () => vo
   if (!detail) return <Loading what="the call" />
 
   const { call, report, carrier } = detail
+  // Defence in depth. The ingestion fix in vapi/webhook.py keeps the composed prompt out of
+  // the stored transcript; this makes sure a row written before that fix -- or by anything
+  // else that learns to write here -- cannot put it back on screen. The prompt states the
+  // mandate ceiling under a heading telling the agent never to say it out loud.
+  const conversation = call.transcript.filter(
+    (turn) => turn.speaker === 'agent' || turn.speaker === 'caller',
+  )
 
   return (
     <div className="page">
@@ -920,12 +1068,17 @@ function CallEvidencePage({ callId, onBack }: { callId: string; onBack: () => vo
         )}
 
         <section>
+          <p className="eyebrow">Decision trace</p>
+          <DecisionTrace callId={callId} />
+        </section>
+
+        <section>
           <p className="eyebrow">Transcript</p>
-          {call.transcript.length === 0 ? (
+          {conversation.length === 0 ? (
             <p className="empty-copy">No transcript was stored for this call.</p>
           ) : (
             <div className="transcript">
-              {call.transcript.map((turn, index) => (
+              {conversation.map((turn, index) => (
                 <div className="transcript-line" key={index}>
                   <time>{formatOffset(turn.offset_ms)}</time>
                   <div>

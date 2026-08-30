@@ -475,6 +475,45 @@ class SupabaseStore:
         row = _one(res)
         return _to_commitment(row) if row else None
 
+    async def decisions_for_call(self, call_id: str) -> list[DecisionRow]:
+        """Not on the Protocol. Every policy evaluation on one call, refusals included.
+
+        The refusals are the point: they are what you show when the agent says no.
+        """
+        with _translate():
+            res = (
+                await self._db.table("decisions")
+                .select("*")
+                .eq("call_id", call_id)
+                .order("decided_at")
+                .execute()
+            )
+        return [DecisionRow.model_validate(r) for r in _rows(res)]
+
+    async def events_for_call(self, call_id: str) -> list[EventRow]:
+        """Not on the Protocol. The ledger entries one call produced, oldest first."""
+        with _translate():
+            res = (
+                await self._db.table("events")
+                .select("*")
+                .eq("call_id", call_id)
+                .order("created_at")
+                .execute()
+            )
+        return [EventRow.model_validate(r) for r in _rows(res)]
+
+    async def commitments_for(self, order_id: str) -> list[Commitment]:
+        """Not on the Protocol. Every commitment on an order, superseded ones included."""
+        with _translate():
+            res = (
+                await self._db.table("commitments")
+                .select("*")
+                .eq("order_id", order_id)
+                .order("created_at")
+                .execute()
+            )
+        return [_to_commitment(r) for r in _rows(res)]
+
     async def due_for_chase(self, now: datetime) -> list[Order]:
         underway = [str(s) for s in DELIVERY_UNDERWAY]
         with _translate():

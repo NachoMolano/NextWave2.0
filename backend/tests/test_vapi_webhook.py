@@ -554,3 +554,32 @@ async def test_a_handler_that_raises_is_logged_and_answered_200() -> None:
 
     assert code == 200
     assert body == {"received": False}
+
+
+def test_the_system_prompt_never_enters_the_transcript() -> None:
+    """The prompt carries the ceiling and the target under FIGURES YOU MUST NEVER SAY OUT LOUD.
+
+    Vapi returns it as the first entry of artifact.messages with role "system". Keeping it --
+    which a role lookup with an "other" fallback does -- published the mandate to anyone with
+    portal access and handed it to the report model as though a person had said it.
+    """
+    from app.vapi.webhook import _turns
+
+    turns = _turns(
+        {
+            "messages": [
+                {
+                    "role": "system",
+                    "message": "FIGURES YOU MUST NEVER SAY OUT LOUD Ceiling: 11,000 USD",
+                    "secondsFromStart": 0,
+                },
+                {"role": "assistant", "message": "This is Volta.", "secondsFromStart": 1.0},
+                {"role": "user", "message": "Ten thousand five hundred.", "secondsFromStart": 9.0},
+                {"role": "tool_calls", "message": "propose_quote(...)", "secondsFromStart": 9.5},
+            ]
+        }
+    )
+
+    assert [t.speaker for t in turns] == ["agent", "caller"]
+    assert not any("Ceiling" in t.text for t in turns)
+    assert not any("11,000" in t.text for t in turns)

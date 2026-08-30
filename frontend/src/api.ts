@@ -8,6 +8,7 @@ import type {
   OrderSummary,
   SetMandateRequest,
   SweepResult,
+  TraceRow,
 } from './types'
 
 /**
@@ -91,6 +92,9 @@ export const voltaApi = {
     request(`/api/calls?order_id=${encodeURIComponent(orderId)}`),
 
   getCall: (callId: string): Promise<CallDetail> => request(`/api/calls/${callId}`),
+
+  /** The Decision Trace. Every row is a row in the ledger; nothing here is inferred. */
+  getTrace: (callId: string): Promise<TraceRow[]> => request(`/api/calls/${callId}/trace`),
 
   listCarriers: (): Promise<Carrier[]> => request('/api/carriers'),
 

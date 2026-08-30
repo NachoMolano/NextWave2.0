@@ -290,3 +290,46 @@ h3 { font-size: 20px; }
 .status-award-approval, .status-open { border-color: color-mix(in srgb, var(--orange) 50%, transparent); color: #a84112; background: #fff3ec; }
 .status-not-committed, .status-verbal, .status-high { border-color: color-mix(in srgb, var(--orange) 50%, transparent); color: #a84112; background: #fff3ec; }
 .status-low { border-color: color-mix(in srgb, #2a7a55 45%, transparent); color: #216b4a; background: #effaf3; }
+
+/* Decision trace. A concise operational story, not a log console: what the counterparty did,
+   what Volta did in response, and what happened next. Time is call-relative because that is
+   what you compare against a recording; the exact clock time is on hover. */
+.trace { margin-top: 4px; }
+.trace-controls { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.trace-filters { display: flex; gap: 7px; flex-wrap: wrap; }
+.trace-filter { padding: 6px 13px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-muted); background: var(--panel); font-size: 12px; font-weight: 600; }
+.trace-filter:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--line)); color: var(--blue); }
+.trace-filter-active, .trace-filter-active:hover { border-color: transparent; color: var(--sand); background: #16706a; }
+.trace-search { width: min(260px, 100%); margin: 0; }
+
+.trace-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.trace-table thead th { padding: 0 12px 10px; border-bottom: 1px solid var(--line); color: var(--ink-muted); font-family: 'Martian Mono', monospace; font-size: 9px; font-weight: 600; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+.trace-table tbody tr { border-bottom: 1px solid var(--line); }
+.trace-table tbody tr:last-child { border-bottom: 0; }
+.trace-table td { padding: 15px 12px; vertical-align: top; line-height: 1.45; }
+.trace-time { color: var(--ink-muted); font-family: 'Martian Mono', monospace; font-size: 11px; white-space: nowrap; cursor: help; }
+.trace-category { display: flex; align-items: center; gap: 7px; color: var(--navy); font-family: 'Martian Mono', monospace; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+
+/* Provenance sits underneath in smaller text. Clicking it should land on the row it came
+   from; until those deep links exist it still says where the fact was recorded. */
+.trace-reason, .trace-provenance { display: block; margin-top: 5px; color: var(--blue); font-family: 'Martian Mono', monospace; font-size: 10px; }
+.trace-provenance { color: var(--ink-muted); }
+
+.trace-result { display: inline-flex; padding: 4px 9px; border: 1px solid; border-radius: 5px; font-family: 'Martian Mono', monospace; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.trace-neutral { border-color: var(--line); color: var(--ink-muted); background: var(--panel); }
+.trace-teal { border-color: color-mix(in srgb, #16706a 45%, transparent); color: #10605a; background: #eefaf8; }
+.trace-amber { border-color: color-mix(in srgb, var(--orange) 55%, transparent); color: #a2560e; background: #fff5e9; }
+.trace-red { border-color: color-mix(in srgb, #c0392b 45%, transparent); color: #b02a1c; background: #fdeeec; }
+.trace-green { border-color: color-mix(in srgb, #2a7a55 45%, transparent); color: #216b4a; background: #effaf3; }
+.trace-dim { border-color: var(--line); color: color-mix(in srgb, var(--navy) 45%, transparent); background: color-mix(in srgb, var(--sand) 60%, var(--panel)); }
+
+.trace-footer { display: flex; align-items: center; gap: 8px; margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--ink-muted); font-size: 11px; }
+.trace-footer::before { content: '🔒'; font-size: 11px; }
+
+@media (max-width: 900px) {
+  .trace-table, .trace-table thead, .trace-table tbody, .trace-table tr, .trace-table td { display: block; }
+  .trace-table thead { display: none; }
+  .trace-table tbody tr { padding: 14px 0; }
+  .trace-table td { padding: 3px 0; }
+  .trace-time { font-size: 10px; }
+}

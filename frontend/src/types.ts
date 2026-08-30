@@ -281,3 +281,44 @@ export interface ApprovalDecisionRequest {
   decided_by: string
   note: string | null
 }
+
+
+/* ------------------------------------------------------------------ decision trace */
+
+export type TraceCategory =
+  | 'conversation'
+  | 'quote'
+  | 'policy'
+  | 'decision'
+  | 'tool'
+  | 'action'
+
+export type TraceResult =
+  | 'continue'
+  | 'proposed'
+  | 'allowed'
+  | 'denied'
+  | 'clarify'
+  | 'escalate'
+  | 'authorized'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'not_executed'
+  | 'unknown'
+
+/**
+ * One line of the operational story: what the counterparty did, what Volta did, what
+ * happened next. A projection over the append-only record — the server adds no fact that
+ * is not already in `decisions`, `events`, `quotes`, `approvals` or `commitments`.
+ */
+export interface TraceRow {
+  at: string
+  offset_ms: number | null
+  category: TraceCategory
+  counterparty: string
+  volta: string
+  result: TraceResult
+  reason_code: string | null
+  provenance: string | null
+}

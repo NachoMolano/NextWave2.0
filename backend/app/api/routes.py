@@ -44,18 +44,21 @@ from app.api.schemas import (
     SetMandateRequest,
     SweepResult,
 )
+from app.api.trace import TraceRow, build_trace
 from app.config import Settings
 from app.domain import (
     Approval,
     CallRecord,
     Carrier,
+    Commitment,
+    DecisionRow,
     DialPlan,
+    EventRow,
     Money,
     Order,
     OrderStatus,
     Store,
 )
-from app.domain.models import EventRow
 from app.store import AwardConflict, RowNotFound, StoreUnavailable
 from app.tools.market import Market
 
@@ -76,6 +79,12 @@ class PortalStore(Store, Protocol):
     async def list_carriers(self) -> list[Carrier]: ...
 
     async def calls_for(self, order_id: str) -> list[CallRecord]: ...
+
+    async def decisions_for_call(self, call_id: str) -> list[DecisionRow]: ...
+
+    async def events_for_call(self, call_id: str) -> list[EventRow]: ...
+
+    async def commitments_for(self, order_id: str) -> list[Commitment]: ...
 
 
 #: A sweep the router can trigger without importing jobs. Returns the call ids placed.
@@ -321,6 +330,34 @@ def create_api_router(
             report = await store.report_for(call_id)
             carrier = await store.carrier(call.carrier_id) if call.carrier_id else None
         return CallDetail(call=call, report=report, carrier=carrier)
+
+    @router.get("/calls/{call_id}/trace", response_model=list[TraceRow])
+    async def get_trace(call_id: str) -> list[TraceRow]:
+        """The Decision Trace: what the counterparty did, what Volta did, what happened next.
+
+        A projection over the append-only record and nothing else. The conversational rows
+        come from the vendor's transcript, which is untrusted; every row carrying an outcome
+        comes from a table we wrote at the moment we wrote it. That is what lets this screen
+        show a refusal without asking the model to describe its own behaviour.
+        """
+        with _guard():
+            call = await store.call(call_id)
+            if call is None:
+                raise HTTPException(status_code=404, detail=f"call {call_id} not found")
+            order_id = call.order_id
+            quotes = await store.quotes_for(order_id) if order_id else []
+            approvals = await store.open_approvals(order_id) if order_id else []
+            commitments = await store.commitments_for(order_id) if order_id else []
+            decisions = await store.decisions_for_call(call_id)
+            events = await store.events_for_call(call_id)
+        return build_trace(
+            call,
+            quotes=quotes,
+            decisions=decisions,
+            events=events,
+            approvals=approvals,
+            commitments=commitments,
+        )
 
     # ---------------------------------------------------------------------- carriers
 

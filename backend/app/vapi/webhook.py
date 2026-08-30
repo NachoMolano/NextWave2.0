@@ -127,6 +127,21 @@ def _recording_url(artifact: object) -> str | None:
 
 
 def _turns(artifact: object) -> list[Turn]:
+    """Conversational turns only. Everything else in ``artifact.messages`` is dropped.
+
+    Vapi returns the whole message array, and its first entry is the ``system`` role: the
+    composed prompt. That prompt contains the section headed FIGURES YOU MUST NEVER SAY OUT
+    LOUD -- the mandate ceiling and the negotiation target. Storing it into
+    ``calls.transcript`` published both to anyone with portal access, handed them to the
+    report model as if a person had said them, and would have carried them into any export.
+
+    So the role map is a whitelist and not a lookup with a fallback. An unrecognised role is
+    logged and discarded: losing a turn we cannot classify is recoverable from the recording,
+    and the previous behaviour -- label it "other" and keep it -- is how a prompt ends up on
+    screen. Tool traffic is dropped here too; the Decision Trace reads tool use from the
+    ``events`` and ``decisions`` we wrote ourselves, which is the authoritative record rather
+    than the vendor's echo of it.
+    """
     messages = _dig(artifact, "messages")
     if not isinstance(messages, list):
         return []
@@ -138,7 +153,10 @@ def _turns(artifact: object) -> list[Turn]:
         role = message.get("role")
         if not isinstance(text, str) or not text.strip():
             continue
-        speaker = _SPEAKER_BY_ROLE.get(str(role).lower(), "other")
+        speaker = _SPEAKER_BY_ROLE.get(str(role).lower())
+        if speaker is None:
+            log.info("vapi.transcript.role_dropped", role=str(role))
+            continue
         seconds = message.get("secondsFromStart")
         offset_ms: int | None = None
         if isinstance(seconds, int | float) and 0 <= seconds <= _MAX_PLAUSIBLE_OFFSET_SECONDS:
