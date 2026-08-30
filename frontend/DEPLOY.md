@@ -51,7 +51,8 @@ SUPABASE_URL, SUPABASE_SECRET_KEY          the database
 VAPI_API_KEY, VAPI_PHONE_NUMBER_ID         placing calls
 VAPI_SERVER_SECRET                         verified before any webhook body is parsed
 VAPI_MODEL, VAPI_VOICE_ID, VAPI_TRANSCRIBER
-OPENAI_API_KEY, OPENAI_REPORT_MODEL        post-call extraction only
+OPENAI_API_KEY, OPENAI_REPORT_MODEL        post-call extraction only; the model must
+                                           support Responses structured outputs
 RESEND_API_KEY, NOTIFY_FROM_EMAIL          the written recap
 TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM
 MANAGER_EMAIL, MANAGER_WHATSAPP, ESCALATION_PHONE_NUMBER
@@ -61,6 +62,20 @@ ENVIRONMENT=demo
 
 Then point the Vapi phone number's server URL at `https://<backend>/vapi/events`, and put
 `https://<backend>` into `vercel.json`.
+
+**Check `/health` after every deploy.** None of the variables above have a default -- an empty
+one is not a degraded mode, it is that feature switched off -- so a non-`local` environment
+lists any it is missing, by name:
+
+```
+curl https://<backend>/health
+{"status":"ok","environment":"demo","config":"incomplete","missing":["OPENAI_REPORT_MODEL"]}
+```
+
+`{"status":"ok","environment":"demo"}` alone means nothing is missing. This exists because
+`OPENAI_REPORT_MODEL` was empty for a fortnight: every call brief failed, the written recap and
+the promotion to `COMMITTED` hang off the same handler, and `/health` answered a flat `ok`
+throughout. It stays HTTP 200 -- an incompletely configured demo is running, not down.
 
 `healthCheckPath` is `/health`, which answers without touching the network on purpose: it is
 the endpoint you need most when the database is the thing that is broken, so it stays a truthful

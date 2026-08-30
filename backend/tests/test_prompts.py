@@ -288,6 +288,22 @@ async def test_structured_report_contains_all_fields_and_anchored_candidates(
     assert report.model == "scripted"
 
 
+async def test_an_unset_report_model_names_the_variable_instead_of_calling_the_provider(
+    context: CallContext,
+) -> None:
+    """OPENAI_REPORT_MODEL was empty on the demo deploy for a fortnight.
+
+    Every brief failed with the provider's "The requested model '' does not exist", which
+    reads like a broken request rather than an unset environment variable, and the whole
+    post-call path was off before anyone read the traceback. Name the variable, and never
+    spend the call.
+    """
+    model = OpenAIReportModel(api_key="unused", model="  ", client=cast(AsyncOpenAI, _FakeOpenAI()))
+
+    with pytest.raises(RuntimeError, match="OPENAI_REPORT_MODEL"):
+        await model.report("call-8", [Turn(speaker="caller", text="Hola", offset_ms=0)], context)
+
+
 # --- the controls the conversational suite found missing from the shipped prompt -------
 #
 # `build_runtime_system_prompt` is what reaches Vapi; `build_system_prompt` is the readable
@@ -377,7 +393,7 @@ def test_relaxed_runtime_is_shorter_but_keeps_server_authority(
 def test_a_spoken_date_range_cannot_fuse_into_one_day(
     profile: CompanyProfile, context: CallContext
 ) -> None:
-    """"September 2 to 5" is "September two to five" down a phone line.
+    """ "September 2 to 5" is "September two to five" down a phone line.
 
     A carrier on the 30 Aug call heard September twenty-fifth and quoted against it. The
     fast fact is the one line the agent is told to say verbatim, so it is the one line that
@@ -412,7 +428,7 @@ def test_the_agent_is_told_to_finish_the_call_before_ending_it(
 def test_money_is_spoken_as_words_not_as_a_currency_code(
     profile: CompanyProfile, context: CallContext
 ) -> None:
-    """"10000 MXN" was read aloud as "ten thousand meters X N"."""
+    """ "10000 MXN" was read aloud as "ten thousand meters X N"."""
     runtime = build_runtime_system_prompt(
         profile, context.model_copy(update={"phase": CallPhase.RFQ})
     ).lower()

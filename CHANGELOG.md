@@ -16,6 +16,30 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T09:47-0500 · agent, config, main · diego
+
+**The empty report model is set, and an empty one can no longer reach OpenAI.**
+`OPENAI_REPORT_MODEL` was blank, so `responses.parse` was called with `model=""` and every
+call brief since deploy died on `The requested model '' does not exist` -- a 400 that reads
+like a broken request rather than the unset variable it was. `report()` now checks the id
+first and raises naming the variable, spending no API call. Local `.env` is set to
+`gpt-4.1-mini`, verified against the real API on an anchored two-turn transcript; it returns
+the full `_ReportExtraction` with offsets intact. **The Render service still needs
+`OPENAI_REPORT_MODEL` set by hand** -- `render.yaml` keeps it `sync: false`, and no model id
+belongs in the repo.
+
+**A `demo` deployment now says what configuration it is missing.** `production_errors()`
+returned `()` unless `ENVIRONMENT=production`, and the deploy runs as `demo`, so the gate
+that lists `OPENAI_REPORT_MODEL`, `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL` and `MANAGER_EMAIL`
+never once looked at the environment placing real calls to real carriers. Split out
+`Settings.missing_keys()`, which applies to every non-`local` environment; `production` still
+refuses to boot, `demo` logs `config.incomplete` at startup and reports `config: incomplete`
+with the missing names on `/health`. Names only, never values, and still HTTP 200 -- an
+incomplete demo is running, not down, and a backend that refuses to start minutes before a
+demo is the worse failure.
+→ Affects: Track D and Track E. `Settings.missing_keys` is new; `production_errors` keeps its
+signature and its meaning. `/health` gained two optional keys.
+
 ## 2026-08-30T08:43-0500 · agent, vapi · diego
 
 **The award call looped because the prompt ordered a tool the assistant did not have.**

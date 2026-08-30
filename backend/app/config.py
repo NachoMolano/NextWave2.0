@@ -103,9 +103,17 @@ class Settings(BaseSettings):
     production_legal_review_ready: bool = False
     environment: Literal["local", "demo", "production"] = "local"
 
-    def production_errors(self) -> tuple[str, ...]:
-        """Return missing production gates without exposing secret values."""
-        if self.environment != "production":
+    def missing_keys(self) -> tuple[str, ...]:
+        """Keys a deployed environment needs to do its job, by name -- never a value.
+
+        Not production-only. A ``demo`` deployment places real calls to real carriers and
+        sends real email, so every key below is load-bearing there too. Discovering that one
+        was empty by reading a traceback -- which is how ``OPENAI_REPORT_MODEL`` was found,
+        after a fortnight of every call brief failing -- is what this exists to prevent.
+
+        ``local`` is exempt: running the suite or a simulated call needs none of it.
+        """
+        if self.environment == "local":
             return ()
         required = {
             "VAPI_API_KEY": self.vapi_api_key,
@@ -126,13 +134,23 @@ class Settings(BaseSettings):
         missing = [name for name, value in required.items() if not value.strip()]
         if self.recording_enabled and not self.recording_consent_notice.strip():
             missing.append("RECORDING_CONSENT_NOTICE")
+        return tuple(missing)
+
+    def production_errors(self) -> tuple[str, ...]:
+        """Return what stops production from starting, without exposing secret values.
+
+        Only ``production`` refuses to boot. A ``demo`` deployment logs its gaps loudly at
+        startup instead -- see ``main.create_app`` -- because a demo backend that will not
+        start is a worse failure than one running with a known, logged hole in it.
+        """
+        if self.environment != "production":
+            return ()
         gates = {
             "PRODUCTION_RETENTION_READY": self.production_retention_ready,
             "PRODUCTION_PROVIDER_DELETION_READY": self.production_provider_deletion_ready,
             "PRODUCTION_LEGAL_REVIEW_READY": self.production_legal_review_ready,
         }
-        missing.extend(name for name, ready in gates.items() if not ready)
-        return tuple(missing)
+        return self.missing_keys() + tuple(name for name, ready in gates.items() if not ready)
 
 
 @lru_cache
