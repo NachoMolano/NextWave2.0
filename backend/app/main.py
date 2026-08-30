@@ -27,7 +27,8 @@ from app import jobs
 from app.agent.report import OpenAIReportModel
 from app.api import PortalStore, create_api_router
 from app.config import Settings, get_settings
-from app.domain import CallPlacer, DialPlan, Notifier, Store
+from app.domain import Approval, CallPlacer, Comparison, DialPlan, Notifier, Store
+from app.notify.render import render_award_request
 from app.notify.sender import NullNotifier, ResendTwilioNotifier
 from app.store.supabase import SupabaseStore
 from app.tools.calls import CallLedger
@@ -162,6 +163,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def sweep() -> list[str]:
         return await jobs.sweep_deadlines(store, placer, settings, now=now_utc, dial=dial)
 
+    async def alert_award(comparison: Comparison, approval: Approval) -> None:
+        if not settings.manager_email.strip():
+            log.warning("award.alert_skipped", detail="MANAGER_EMAIL is not configured")
+            return
+        message = render_award_request(comparison, settings.manager_email).model_copy(
+            update={"approval_id": approval.id}
+        )
+        result = await notifier.send(message)
+        await store.record_delivery(message, result)
+
     # Built here so the same capability instances are injected into every router. In
     # particular, webhook lifecycle events and model tools share one CallLedger.
     app_state = {
@@ -180,7 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(
-            jobs.run_forever(store, placer, settings, now=now_utc, dial=dial)
+            jobs.run_forever(store, placer, settings, now=now_utc, dial=dial, alert=alert_award)
         )
         log.info("jobs.started", interval_seconds=settings.sweep_interval_seconds)
         try:

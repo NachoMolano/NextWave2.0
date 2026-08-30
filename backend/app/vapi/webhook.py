@@ -28,6 +28,7 @@ STATUS: built. OWNER: Track B.
 
 import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
@@ -277,10 +278,15 @@ def create_webhook_router(
         mapped = _STATUS_BY_VAPI_STATUS.get(str(raw_status), CallStatus.QUEUED)
         inbound = str(call.get("type", "")).startswith("inbound")
 
+        existing = await store.call_by_vapi_id(vapi_call_id)
+        phase = CallPhase.INBOUND if inbound else CallPhase.RFQ
+        if existing is not None:
+            with suppress(ValueError):
+                phase = CallPhase(existing.phase)
         record = CallRecord(
             vapi_call_id=vapi_call_id,
             direction=CallDirection.INBOUND if inbound else CallDirection.OUTBOUND,
-            phase=CallPhase.INBOUND.value if inbound else CallPhase.RFQ.value,
+            phase=phase.value,
             status=mapped,
             from_number=_dig(call, "from", "phoneNumber"),
             to_number=_dig(call, "customer", "number"),
@@ -299,10 +305,15 @@ def create_webhook_router(
 
         artifact = message.get("artifact")
         inbound = str(call.get("type", "")).startswith("inbound")
+        existing = await store.call_by_vapi_id(vapi_call_id)
+        phase = CallPhase.INBOUND if inbound else CallPhase.RFQ
+        if existing is not None:
+            with suppress(ValueError):
+                phase = CallPhase(existing.phase)
         record = CallRecord(
             vapi_call_id=vapi_call_id,
             direction=CallDirection.INBOUND if inbound else CallDirection.OUTBOUND,
-            phase=CallPhase.INBOUND.value if inbound else CallPhase.RFQ.value,
+            phase=phase.value,
             status=CallStatus.ENDED,
             ended_at=now(),
             ended_reason=message.get("endedReason")
@@ -323,7 +334,7 @@ def create_webhook_router(
 
         stored = await store.call(call_id)
         context = CallContext(
-            phase=CallPhase.INBOUND if inbound else CallPhase.RFQ,
+            phase=phase,
             today=spoken_today(now(), profile.timezone),
         )
         if stored is not None and stored.context:

@@ -16,6 +16,7 @@ from app.domain import (
     ApprovalStatus,
     AwardConflict,
     CallPhase,
+    CallReport,
     Carrier,
     Money,
     Order,
@@ -235,6 +236,27 @@ async def test_request_award_approval_hands_over_the_whole_comparison() -> None:
     assert len(approval.context["entries"]) == 2, "the loser travels with the request"
     order_row = await store.order("order-1")
     assert order_row is not None and order_row.status is OrderStatus.AWAITING_APPROVAL
+
+
+async def test_renegotiation_context_uses_the_first_call_report_as_guidance() -> None:
+    store, market = seeded()
+    quote_id = await store.add_quote(quote("carrier-1", 850_000))
+    await store.save_report(
+        CallReport(
+            call_id="call-carrier-1",
+            summary="Quoted 8,500 USD but objected to the pickup hour.",
+            objections=["Pickup is too early"],
+            conditions=["Subject to chassis availability"],
+        )
+    )
+    comparison = await market.rank(order())
+
+    plans = await market.plan_renegotiation(order(), comparison)
+
+    assert len(plans) == 1
+    assert plans[0].context["phase"] == CallPhase.RENEGOTIATION.value
+    assert "Pickup is too early" in str(plans[0].context["agreed_terms"])
+    assert quote_id in {entry.quote_id for entry in comparison.entries}
 
 
 async def test_an_award_needs_an_approved_approval() -> None:

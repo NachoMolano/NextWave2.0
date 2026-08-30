@@ -99,6 +99,9 @@ class InMemoryStore:
     async def call_by_vapi_id(self, vapi_call_id: str) -> CallRecord | None:
         return next((c for c in self.calls.values() if c.vapi_call_id == vapi_call_id), None)
 
+    async def calls_for(self, order_id: str) -> list[CallRecord]:
+        return [call for call in self.calls.values() if call.order_id == order_id]
+
     async def quotes_for(self, order_id: str) -> list[QuoteRow]:
         return [q for q in self.quotes.values() if q.order_id == order_id]
 

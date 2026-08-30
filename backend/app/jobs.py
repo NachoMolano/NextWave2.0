@@ -19,17 +19,20 @@ OWNER: Track E.
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from typing import Protocol, cast
 
 import structlog
 
 from app.config import Settings
 from app.domain import (
+    Approval,
     CallContext,
     CallDirection,
     CallPhase,
     CallPlacer,
     CallRecord,
     CallStatus,
+    Comparison,
     DialPlan,
     EventRow,
     Order,
@@ -47,6 +50,11 @@ log = structlog.get_logger(__name__)
 #: How a sweep turns plans into calls. Injected so the suite can run the whole clock with no
 #: Vapi and no credit spend; ``main.py`` passes nothing and gets the real fan-out.
 Dialler = Callable[[list[DialPlan], CallPlacer, Settings], Awaitable[dict[str, str]]]
+AwardAlert = Callable[[Comparison, Approval], Awaitable[None]]
+
+
+class CallListingStore(Store, Protocol):
+    async def calls_for(self, order_id: str) -> list[CallRecord]: ...
 
 
 async def sweep_deadlines(
@@ -129,29 +137,54 @@ async def sweep_deadlines(
 
 
 async def timeout_open_markets(
-    store: Store, settings: Settings, *, now: Callable[[], datetime]
+    store: Store,
+    settings: Settings,
+    *,
+    now: Callable[[], datetime],
+    placer: CallPlacer | None = None,
+    dial: Dialler | None = None,
+    alert: AwardAlert | None = None,
 ) -> list[str]:
-    """Rank any RFQ that has been open past the timeout. Returns the order ids ranked."""
+    """Close RFQ, run one bounded renegotiation round, then request approval."""
     moment = now()
     cutoff = moment - timedelta(minutes=settings.rfq_timeout_minutes)
     market = Market(store, now=now)
     ranked: list[str] = []
 
     for order in await store.orders_in_status(OrderStatus.QUOTING):
-        if not await _market_is_closed(store, order, cutoff):
+        calls = await _calls_for(store, order.id)
+        rfq_calls = [call for call in calls if call.phase == CallPhase.RFQ.value]
+        renegotiation_calls = [
+            call for call in calls if call.phase == CallPhase.RENEGOTIATION.value
+        ]
+        phase = CallPhase.RENEGOTIATION if renegotiation_calls else CallPhase.RFQ
+        phase_calls = renegotiation_calls or rfq_calls
+        if not _calls_are_closed(phase_calls, cutoff):
             continue
         accepted = await store.append_event(
             EventRow(
                 order_id=order.id,
-                type="rfq.timed_out",
-                payload={"cutoff": cutoff.isoformat()},
-                idempotency_key=f"rfq-timeout:{order.id}:{order.mandate_version}",
+                type=f"{phase.value}.closed",
+                payload={"cutoff": cutoff.isoformat(), "call_count": len(phase_calls)},
+                idempotency_key=f"{phase.value}-closed:{order.id}:{order.mandate_version}",
             )
         )
         if not accepted:
             continue
         comparison = await market.rank(order)
-        await market.request_award_approval(order, comparison)
+        if phase is CallPhase.RFQ:
+            plans = await market.plan_renegotiation(order, comparison)
+            if plans and placer is not None:
+                if dial is None:
+                    await run_campaign(
+                        plans, placer, settings, profile=profile_from_settings(settings)
+                    )
+                else:
+                    await dial(plans, placer, settings)
+                continue
+        approval = await market.request_award_approval(order, comparison)
+        if alert is not None:
+            await alert(comparison, approval)
         ranked.append(order.id)
     return ranked
 
@@ -166,6 +199,10 @@ async def _market_is_closed(store: Store, order: Order, cutoff: datetime) -> boo
     calls = [
         call for call in await _calls_for(store, order.id) if call.phase == CallPhase.RFQ.value
     ]
+    return _calls_are_closed(calls, cutoff)
+
+
+def _calls_are_closed(calls: list[CallRecord], cutoff: datetime) -> bool:
     if not calls:
         return False
     if all(call.status in (CallStatus.ENDED, CallStatus.FAILED) for call in calls):
@@ -182,13 +219,7 @@ async def _calls_for(store: Store, order_id: str) -> list[CallRecord]:
     count per order is three, and Track C can collapse this into one indexed query later --
     ``calls_order_idx`` already exists in 0001_init.sql for exactly that.
     """
-    quotes = await store.quotes_for(order_id)
-    seen: dict[str, CallRecord] = {}
-    for quote in quotes:
-        call = await store.call(quote.call_id)
-        if call is not None and call.id:
-            seen[call.id] = call
-    return list(seen.values())
+    return await cast(CallListingStore, store).calls_for(order_id)
 
 
 async def run_forever(
@@ -198,6 +229,7 @@ async def run_forever(
     *,
     now: Callable[[], datetime],
     dial: Dialler | None = None,
+    alert: AwardAlert | None = None,
 ) -> None:
     """The loop main.py starts at boot.
 
@@ -208,7 +240,9 @@ async def run_forever(
         await asyncio.sleep(settings.sweep_interval_seconds)
         try:
             dialled = await sweep_deadlines(store, placer, settings, now=now, dial=dial)
-            ranked = await timeout_open_markets(store, settings, now=now)
+            ranked = await timeout_open_markets(
+                store, settings, now=now, placer=placer, dial=dial, alert=alert
+            )
             if dialled or ranked:
                 log.info("jobs.tick", dialled=len(dialled), ranked=len(ranked))
         except asyncio.CancelledError:
