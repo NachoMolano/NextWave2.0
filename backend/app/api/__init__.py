@@ -1,4 +1,4 @@
-"""The dashboard's REST surface. Authenticated humans, not strangers on a phone.
+"""The dashboard's REST surface. User-operated, never reachable from a phone call.
 
 MAY IMPORT:  domain, config, tools, store.
 IMPORTED BY: main.

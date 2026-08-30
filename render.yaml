@@ -14,25 +14,8 @@ services:
     healthCheckPath: /health
     envVars:
       # --- the human portal ---
-      # Every /api route requires `Authorization: Bearer <token>`. With none of these set the
-      # portal answers 503 -- deliberately: /api carries the only endpoint that can write a
-      # price cap, and failing open there would be the wrong default.
-      #
-      # Prefer PORTAL_TOKENS, one token per person:
-      #
-      #     PORTAL_TOKENS=<long-random>:maria@volta.mx,<long-random>:diego@volta.mx
-      #
-      # The identity is taken from the credential and written into mandate_set_by and
-      # decided_by, so it is the name a jury reads. With one shared token that name means
-      # "somebody holding the shared token", which claims more accountability than the system
-      # can back; per-person tokens make the same row true and let one person be revoked
-      # without rotating everyone. Generate each with `openssl rand -base64 32`.
-      - key: PORTAL_TOKENS
-        sync: false
-
-      # The single-token fallback, honoured when PORTAL_TOKENS is empty. Fine for a demo.
-      - key: PORTAL_API_TOKEN
-        generateValue: true
+      # The portal deliberately has no login. This optional label is recorded on mandate and
+      # approval actions so demo audit rows identify the deployment that made them.
       - key: PORTAL_MANAGER_IDENTITY
         sync: false
 

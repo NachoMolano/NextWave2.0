@@ -1,6 +1,6 @@
 # frontend
 
-The portal. Authenticated humans, not strangers on a phone.
+The portal. User-operated, never reachable from a phone call.
 
 Vite + React + TypeScript, no router and no state library. Ported from the control tower in
 the old repo: the design system, the shell and the page shapes carried over; the data layer

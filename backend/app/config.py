@@ -54,42 +54,10 @@ class Settings(BaseSettings):
     manager_email: str = ""
     manager_whatsapp: str = ""
 
-    # --- Human portal authority ---
-    #: Authentication for every /api route. Request bodies never get to choose their own
-    #: audit actor: the identity comes from the credential, because a name typed into a form
-    #: authenticates nothing.
-    #:
-    #: One token per person, as ``token:identity`` pairs separated by commas or newlines:
-    #:
-    #:     PORTAL_TOKENS=k7f...:maria@volta.mx,q2p...:diego@volta.mx
-    #:
-    #: This is the difference between an audit trail that means something and one that only
-    #: looks like it does. With a shared token, "maria@volta.mx approved this" really means
-    #: "somebody holding the shared token approved this" -- a human-looking address claiming
-    #: more accountability than the system can back. Per-person tokens make the same row true,
-    #: and let one person's access be revoked without rotating everyone's.
-    portal_tokens: str = ""
-
-    #: The single-token fallback. Still honoured so an existing deployment keeps working, but
-    #: PORTAL_TOKENS is the one to reach for.
-    portal_api_token: str = ""
+    # --- Portal audit identity ---
+    #: The portal is deliberately unauthenticated. This label is written to mandate and
+    #: approval audit rows so actions remain attributable to the running deployment.
     portal_manager_identity: str = ""
-
-    #: Below this a token is a password, not a secret. Not enforced -- refusing to boot over a
-    #: policy judgement in the middle of a demo is the wrong trade -- but it is logged loudly
-    #: at startup, because a short token on a public URL is a real exposure and a silent one.
-    portal_minimum_token_length: int = 24
-
-    def portal_identities(self) -> dict[str, str]:
-        """token -> the identity it acts as. Empty when the portal is unconfigured."""
-        pairs: dict[str, str] = {}
-        for entry in self.portal_tokens.replace("\n", ",").split(","):
-            token, separator, identity = entry.strip().partition(":")
-            if separator and token.strip() and identity.strip():
-                pairs[token.strip()] = identity.strip()
-        if not pairs and self.portal_api_token.strip() and self.portal_manager_identity.strip():
-            pairs[self.portal_api_token.strip()] = self.portal_manager_identity.strip()
-        return pairs
 
     # --- Escalation ---
     #: Where a live call is transferred when the agent hands off to a person.
@@ -121,7 +89,6 @@ class Settings(BaseSettings):
     #: Recording is opt-in. Enabling it requires an approved consent/retention process.
     recording_enabled: bool = False
     recording_consent_notice: str = ""
-    production_tenant_auth_ready: bool = False
     production_retention_ready: bool = False
     production_provider_deletion_ready: bool = False
     production_legal_review_ready: bool = False
@@ -137,14 +104,11 @@ class Settings(BaseSettings):
             "VAPI_SERVER_SECRET": self.vapi_server_secret,
             "SUPABASE_URL": self.supabase_url,
             "SUPABASE_SECRET_KEY": self.supabase_secret_key,
-            "PORTAL_API_TOKEN": self.portal_api_token,
-            "PORTAL_MANAGER_IDENTITY": self.portal_manager_identity,
         }
         missing = [name for name, value in required.items() if not value.strip()]
         if self.recording_enabled and not self.recording_consent_notice.strip():
             missing.append("RECORDING_CONSENT_NOTICE")
         gates = {
-            "PRODUCTION_TENANT_AUTH_READY": self.production_tenant_auth_ready,
             "PRODUCTION_RETENTION_READY": self.production_retention_ready,
             "PRODUCTION_PROVIDER_DELETION_READY": self.production_provider_deletion_ready,
             "PRODUCTION_LEGAL_REVIEW_READY": self.production_legal_review_ready,

@@ -9,8 +9,8 @@
 The repository implements the locally enforceable v1 kernel in
 `feat/security-kernel-implementation`:
 
-- all portal routes require a configured manager Bearer token, and audit actors are derived
-  server-side;
+- the demo portal has no login; a configured audit label, or `portal-operator`, is recorded
+  server-side for mandate and approval writes;
 - mandate writes use an expected version and an atomic conditional update;
 - awards are re-ranked against the current mandate immediately before acceptance;
 - only the accepted winner, on its own AWARD call, may create a verbal pre-agreement;
@@ -19,8 +19,8 @@ The repository implements the locally enforceable v1 kernel in
 - recording defaults off; enabling it requires a spoken notice, and without recording the
   pre-agreement tool is not exposed;
 - directory phone match is identity level 1, and one independent operational fact is level 2;
-- production startup is blocked behind explicit tenant-auth, retention, provider-deletion, and
-  legal-review readiness gates.
+- production startup is blocked behind explicit retention, provider-deletion, and legal-review
+  readiness gates.
 
 These controls do not prove the external readiness gates. A production operator must provide
 the referenced evidence before setting them true. CP4 remains `NOT RUN` until a consented real
@@ -91,7 +91,8 @@ The exact allowed import graph lives in `backend/tests/test_layering.py`.
 - `vapi/`: assistant composition, outbound placement, authenticated webhooks, and tool dispatch.
 - `store/`: the only Supabase client and persistence implementation.
 - `notify/`: Resend email and Twilio WhatsApp adapters; never decides eligibility.
-- `api/`: authenticated human REST surface; mutations flow through trusted services/tools.
+- `api/`: user-operated REST surface, separate from Vapi; mutations flow through trusted
+  services/tools.
 - `jobs.py`: injected clock-driven sweeps.
 - `main.py`: composition root; handlers do not construct clients.
 
@@ -120,14 +121,14 @@ No import widening is justified merely because it makes integration easier.
 The immutable mandate binds:
 
 - mandate ID and version;
-- authenticated owner and operation ID;
+- deployment audit actor and operation ID;
 - positive all-in ceiling;
 - inclusive pickup window;
 - non-empty allowed equipment set;
 - explicit commitment mode;
 - optional human-approved FX margin when mixed currencies are enabled.
 
-Only the authenticated dashboard path writes mandate fields. Each write increments
+Only the dashboard path writes mandate fields. Each write increments
 `mandate_version`; decisions copy the cap and version by value.
 
 ### 5.2 Proposal and evidence

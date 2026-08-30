@@ -18,8 +18,8 @@ import type {
  * The one place the portal talks to the backend.
  *
  * Every path is under `/api`, which is not decoration: `/vapi` is the surface a stranger on a
- * phone reaches and `/api` is the one an authenticated human reaches, and the backend keeps
- * them in separate packages for exactly that reason. Nothing here should ever call `/vapi`.
+ * phone reaches and `/api` is the user-operated portal surface. The backend keeps them in
+ * separate packages for exactly that reason. Nothing here should ever call `/vapi`.
  *
  * There is no Supabase client in this app and there must not be one. The database is reached
  * through the API or not at all -- the service key is server-side, and evidence is redacted
@@ -30,15 +30,6 @@ import type {
 // same-origin request and no CORS policy needs to exist. Set VITE_API_BASE_URL only when the
 // portal is deployed somewhere the API is not.
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
-const tokenKey = 'volta_portal_token'
-
-export function setPortalToken(token: string): void {
-  sessionStorage.setItem(tokenKey, token)
-}
-
-export function hasPortalToken(): boolean {
-  return Boolean(sessionStorage.getItem(tokenKey))
-}
 
 export class ApiError extends Error {
   readonly status: number
@@ -51,11 +42,9 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = sessionStorage.getItem(tokenKey)
   const response = await fetch(`${apiBaseUrl}${path}`, {
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
     ...init,
@@ -115,7 +104,7 @@ export const voltaApi = {
 
   listCarriers: (): Promise<Carrier[]> => request('/api/carriers'),
 
-  /** Who this token is. Also how the sign-in screen tells a good token from a bad one. */
+/** The deployment identity recorded for actions made in the portal. */
   getSession: (): Promise<Session> => request('/api/session'),
 
   getProfile: (): Promise<BusinessProfile> => request('/api/profile'),
