@@ -41,6 +41,7 @@ from app.api.schemas import (
     CallDetail,
     ConfirmIntakeRequest,
     DemurrageView,
+    EmailTestRequest,
     MandateView,
     NewOrderRequest,
     OrderAggregate,
@@ -58,10 +59,14 @@ from app.domain import (
     Carrier,
     Commitment,
     DecisionRow,
+    DeliveryResult,
     DialPlan,
     EventRow,
     Money,
+    NotificationChannel,
+    Notifier,
     Order,
+    OutboundMessage,
     Store,
 )
 from app.store import AwardConflict, RowNotFound, StoreUnavailable
@@ -139,6 +144,7 @@ def create_api_router(
     dial: Dialler,
     now: Callable[[], datetime],
     settings: Settings,
+    notifier: Notifier | None = None,
 ) -> APIRouter:
     async def portal_actor() -> str:
         """The unauthenticated portal still records a stable audit actor."""
@@ -464,7 +470,7 @@ def create_api_router(
             if body.status == "approved" and approval.order_id:
                 order = await store.order(approval.order_id)
                 if order is not None and str(approval.kind) == "award_approval":
-                    await market.award(
+                    quote_id = await market.award(
                         order,
                         approval.model_copy(
                             update={
@@ -474,6 +480,19 @@ def create_api_router(
                             }
                         ),
                     )
+                    plans = await market.plan_award(order, quote_id)
+                    if plans:
+                        placed = await dial(plans)
+                        if not placed:
+                            await market.mark_dial_round_failed(plans)
+                            raise HTTPException(
+                                status_code=502,
+                                detail=(
+                                    "The winning carrier was not called: the telephony "
+                                    "provider refused the confirmation call. The approval "
+                                    "remains open and can be retried safely."
+                                ),
+                            )
             await store.resolve_approval(
                 approval_id,
                 status=body.status,
@@ -588,6 +607,25 @@ def create_api_router(
         with _guard():
             row = await store.save_company_profile(values)
         return BusinessProfile.model_validate(row)
+
+    # ---------------------------------------------------------------------- email test
+
+    @router.post("/email-test", response_model=DeliveryResult)
+    async def send_email_test(body: EmailTestRequest) -> DeliveryResult:
+        """Local smoke test only; never an unauthenticated production mail relay."""
+        if settings.environment != "local":
+            raise HTTPException(status_code=404, detail="email test is available only locally")
+        if notifier is None:
+            raise HTTPException(status_code=503, detail="email notifier is not configured")
+        if "@" not in body.to_address or body.to_address.startswith("@"):
+            raise HTTPException(status_code=422, detail="enter a valid recipient email address")
+        message = OutboundMessage(
+            channel=NotificationChannel.EMAIL,
+            to_address=body.to_address,
+            subject=body.subject,
+            body=body.body,
+        )
+        return await notifier.send(message)
 
     # -------------------------------------------------------------------------- jobs
 

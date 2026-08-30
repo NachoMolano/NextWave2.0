@@ -334,6 +334,33 @@ async def test_a_granted_award_accepts_exactly_one_quote() -> None:
     assert order_row is not None and order_row.status is OrderStatus.AWARDING
 
 
+async def test_an_accepted_award_plans_one_exact_confirmation_call() -> None:
+    store, market = seeded()
+    quote_id = await store.add_quote(quote("carrier-1", 810_000, status=QuoteStatus.ACCEPTED))
+
+    plans = await market.plan_award(order(), quote_id)
+
+    assert len(plans) == 1
+    assert plans[0].carrier.id == "carrier-1"
+    assert plans[0].context["phase"] == CallPhase.AWARD.value
+    assert "8,100.00 USD" in str(plans[0].context["agreed_terms"])
+    call = await store.call(plans[0].call_id)
+    assert call is not None and call.phase == CallPhase.AWARD.value
+    assert await market.plan_award(order(), quote_id) == [], "a replay never dials twice"
+
+
+async def test_a_failed_award_dial_can_plan_one_safe_retry() -> None:
+    store, market = seeded()
+    quote_id = await store.add_quote(quote("carrier-1", 810_000, status=QuoteStatus.ACCEPTED))
+    first = await market.plan_award(order(), quote_id)
+    await market.mark_dial_round_failed(first)
+
+    retry = await market.plan_award(order(), quote_id)
+
+    assert len(retry) == 1
+    assert retry[0].call_id != first[0].call_id
+
+
 async def test_a_second_award_conflicts_and_raises_an_approval() -> None:
     """Two open bookings is the worst failure in the brief.
 

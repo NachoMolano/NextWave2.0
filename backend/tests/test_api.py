@@ -26,6 +26,7 @@ from app.domain import (
     ApprovalReason,
     AwardConflict,
     CallDirection,
+    CallPhase,
     CallRecord,
     Carrier,
     Commitment,
@@ -37,7 +38,7 @@ from app.domain import (
     OrderStatus,
 )
 from app.store import RowNotFound, StoreUnavailable
-from tests.fakes import InMemoryStore
+from tests.fakes import InMemoryStore, RecordingNotifier
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 PORTAL_ACTOR = "ops@volta.test"
@@ -164,6 +165,17 @@ class FakeMarket:
         self.awarded.append(str(order.id))
         return "quote-1"
 
+    async def plan_award(self, order: Order, quote_id: str) -> list[DialPlan]:
+        carrier = Carrier(id="carrier-1", name="Winner", phone="+525500000001")
+        return [
+            DialPlan(
+                call_id="award-call-1",
+                carrier=carrier,
+                to_number=carrier.phone,
+                context={"phase": CallPhase.AWARD.value, "quote_id": quote_id},
+            )
+        ]
+
 
 class FakeDialler:
     """Records what would have been dialled. Never touches the network."""
@@ -202,6 +214,7 @@ def build(
     market: FakeMarket | None = None,
     sweep: FakeSweep | None = None,
     dial: FakeDialler | None = None,
+    notifier: RecordingNotifier | None = None,
 ) -> tuple[TestClient, PortalMemoryStore, FakeMarket, FakeSweep, FakeDialler]:
     store = store or PortalMemoryStore()
     market = market or FakeMarket(store=store)
@@ -216,6 +229,7 @@ def build(
             dial=dial,
             now=_now,
             settings=Settings(portal_manager_identity="ops@volta.test"),
+            notifier=notifier,
         ),
         prefix="/api",
     )
@@ -578,7 +592,7 @@ def _rfq_call(store: PortalMemoryStore, order_id: str, carrier_id: str) -> str:
 
 
 def test_approving_an_award_releases_the_award_call() -> None:
-    client, store, market, _, _ = build()
+    client, store, market, _, dial = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     approval_id = _award_approval(store, order_id)
 
@@ -590,6 +604,28 @@ def test_approving_an_award_releases_the_award_call() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "approved"
     assert market.awarded == [order_id]
+    assert dial.numbers_dialled == ["+525500000001"]
+    assert dial.batches[0][0].context["phase"] == CallPhase.AWARD.value
+
+
+def test_an_award_call_that_places_nothing_keeps_the_approval_retryable() -> None:
+    dial = FakeDialler(places=False)
+    client, store, _, _, _ = build(dial=dial)
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    approval_id = _award_approval(store, order_id)
+
+    failed = client.post(
+        f"/api/approvals/{approval_id}/decision", json={"status": "approved"}
+    )
+    assert failed.status_code == 502
+    assert len(client.get("/api/approvals").json()) == 1
+
+    dial.places = True
+    retry = client.post(
+        f"/api/approvals/{approval_id}/decision", json={"status": "approved"}
+    )
+    assert retry.status_code == 200
+    assert len(dial.batches) == 2
 
 
 def test_a_dial_round_that_places_nothing_is_a_502_not_a_silent_200() -> None:
@@ -1037,3 +1073,34 @@ def test_portal_uses_configured_audit_identity_without_login() -> None:
     client = _app_with(Settings(portal_manager_identity="ops@volta.mx"))
 
     assert client.get("/api/session").json()["actor"] == "ops@volta.mx"
+
+
+def test_local_email_composer_sends_without_touching_application_state() -> None:
+    notifier = RecordingNotifier()
+    client, store, _, _, _ = build(notifier=notifier)
+
+    response = client.post(
+        "/api/email-test",
+        json={
+            "to_address": "operator@example.com",
+            "subject": "Standalone test",
+            "body": "This is separate from the procurement flow.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "sent"
+    assert notifier.sent[0].to_address == "operator@example.com"
+    assert store.deliveries == []
+
+
+def test_email_composer_is_not_exposed_outside_local_mode() -> None:
+    client = _app_with(Settings(environment="demo"))
+
+    assert (
+        client.post(
+            "/api/email-test",
+            json={"to_address": "operator@example.com", "subject": "No", "body": "No"},
+        ).status_code
+        == 404
+    )

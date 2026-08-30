@@ -113,6 +113,7 @@ def _router(
     escalation_number: str = ESCALATION_NUMBER,
     secret: str = SECRET,
     compose: Any = _assistant,
+    after_report: Any = None,
 ) -> Any:
     return create_webhook_router(
         store=store,
@@ -123,6 +124,7 @@ def _router(
         escalation_number=escalation_number,
         server_secret=secret,
         now=lambda: NOW,
+        after_report=after_report,
     )
 
 
@@ -263,6 +265,32 @@ async def test_replaying_the_same_end_of_call_report_is_a_no_op() -> None:
     assert len(ledger.finalized) == 1
     assert reporter.calls == [next(iter(store.calls))], "the model ran exactly once"
     assert len(store.reports) == 1
+
+
+async def test_post_call_workflow_receives_the_durable_call_and_report_once() -> None:
+    store = InMemoryStore()
+    ledger = RecordingLedger(store)
+    received: list[tuple[CallRecord, CallReport]] = []
+
+    async def after_report(call: CallRecord, report: CallReport) -> None:
+        received.append((call, report))
+
+    payload = _fixture("end_of_call_report.json")
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(_router(store, ledger, after_report=after_report), prefix="/vapi")
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://webhook.test"
+    ) as client:
+        first = await client.post("/vapi/events", json=payload, headers={"X-Vapi-Secret": SECRET})
+        second = await client.post("/vapi/events", json=payload, headers={"X-Vapi-Secret": SECRET})
+
+    assert first.json()["notified"] is True
+    assert second.json()["duplicate"] is True
+    assert len(received) == 1
+    assert received[0][0].recording_url == "https://storage.vapi.ai/provisional.wav"
+    assert received[0][1].call_id == received[0][0].id
 
 
 async def test_an_epoch_shaped_offset_is_dropped_rather_than_stored() -> None:
