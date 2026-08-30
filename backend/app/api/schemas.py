@@ -1,0 +1,218 @@
+"""The JSON shapes the dashboard binds to.
+
+MAY IMPORT:  domain.
+IMPORTED BY: api.
+
+Domain models are already Pydantic and already frozen, so the reads hand them back directly
+rather than restating forty fields in a parallel hierarchy that can drift. What lives here is
+only the shapes that do not exist in ``domain/``: the request bodies a human sends, and the
+two projections the portal needs that no single table holds -- the mandate as one object, and
+the demurrage countdown that makes everything downstream urgent.
+
+OWNER: Track C.
+"""
+
+from datetime import date, datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.domain import (
+    Approval,
+    CallRecord,
+    CallReport,
+    Carrier,
+    Commitment,
+    CommitmentMode,
+    Money,
+    Order,
+    OrderStatus,
+    QuoteRow,
+)
+
+__all__ = [
+    "ApprovalDecisionRequest",
+    "CallDetail",
+    "DemurrageView",
+    "MandateView",
+    "NewOrderRequest",
+    "OrderAggregate",
+    "OrderSummary",
+    "SetMandateRequest",
+    "SweepResult",
+]
+
+
+# ------------------------------------------------------------------------- what a human sends
+
+
+class NewOrderRequest(BaseModel):
+    """A cargo was received at port. Idempotent on ``reference``."""
+
+    reference: str = Field(min_length=1)
+    origin: str | None = None
+    destination: str | None = None
+    cargo: str | None = None
+    equipment: str | None = None
+    weight: str | None = None
+    container_number: str | None = None
+    discharged_at: datetime | None = None
+    free_days: int | None = Field(default=None, ge=0)
+    last_free_day: date | None = None
+    delivery_deadline: datetime | None = None
+    expected_driver: str | None = None
+    expected_plate: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class SetMandateRequest(BaseModel):
+    """Step 4. The only shape in the system that can raise a price ceiling.
+
+    ``set_by`` is required and has no default. An authorization with nobody's name on it is
+    not an authorization, and this is the row a jury reads when it asks who allowed the spend.
+    """
+
+    cap_amount_cents: int = Field(gt=0)
+    cap_currency: str = Field(min_length=3, max_length=3)
+    target_amount_cents: int | None = Field(default=None, gt=0)
+    pickup_not_before: datetime
+    pickup_not_after: datetime
+    delivery_deadline: datetime | None = None
+    commitment_mode: CommitmentMode = CommitmentMode.HUMAN_ESCALATION
+    set_by: str = Field(min_length=1)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    """Steps 9 and 10. ``approved`` on an award is what releases the award call."""
+
+    status: str = Field(pattern="^(approved|rejected|handled|expired)$")
+    decided_by: str = Field(min_length=1)
+    note: str | None = None
+
+
+# --------------------------------------------------------------------------- what it reads back
+
+
+class MandateView(BaseModel):
+    """The mandate as one object, rather than eight columns the caller has to reassemble."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: int
+    cap: Money | None
+    target: Money | None
+    pickup_not_before: datetime | None
+    pickup_not_after: datetime | None
+    commitment_mode: CommitmentMode
+    set_by: str | None
+    set_at: datetime | None
+    is_granted: bool = Field(
+        description="False means nothing is authorized. Not 'no limit' -- no mandate."
+    )
+
+    @classmethod
+    def of(cls, order: Order) -> "MandateView":
+        return cls(
+            version=order.mandate_version,
+            cap=order.cap,
+            target=order.target,
+            pickup_not_before=order.pickup_not_before,
+            pickup_not_after=order.pickup_not_after,
+            commitment_mode=order.commitment_mode,
+            set_by=order.mandate_set_by,
+            set_at=order.mandate_set_at,
+            is_granted=order.has_mandate,
+        )
+
+
+class DemurrageView(BaseModel):
+    """The countdown. Nobody decides it: discharge starts it and the clock runs.
+
+    This is why the portal is urgent rather than informational, so it is computed on the way
+    out instead of being stored and going stale.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    discharged_at: datetime | None
+    free_days: int | None
+    last_free_day: date | None
+    days_remaining: int | None
+    is_overdue: bool
+
+    @classmethod
+    def of(cls, order: Order, today: date) -> "DemurrageView":
+        remaining = (order.last_free_day - today).days if order.last_free_day else None
+        return cls(
+            discharged_at=order.discharged_at,
+            free_days=order.free_days,
+            last_free_day=order.last_free_day,
+            days_remaining=remaining,
+            is_overdue=remaining is not None and remaining < 0,
+        )
+
+
+class OrderSummary(BaseModel):
+    """One row of the queue. Enough to triage without opening anything."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    reference: str
+    status: OrderStatus
+    origin: str | None
+    destination: str | None
+    container_number: str | None
+    demurrage: DemurrageView
+    mandate: MandateView
+    open_approvals: int
+
+    @classmethod
+    def of(cls, order: Order, today: date, open_approvals: int) -> "OrderSummary":
+        return cls(
+            id=str(order.id),
+            reference=order.reference,
+            status=order.status,
+            origin=order.origin,
+            destination=order.destination,
+            container_number=order.container_number,
+            demurrage=DemurrageView.of(order, today),
+            mandate=MandateView.of(order),
+            open_approvals=open_approvals,
+        )
+
+
+class OrderAggregate(BaseModel):
+    """Everything the portal needs about one order, in one call.
+
+    One request rather than six because the screen is a decision surface: a human approving an
+    award should not be looking at a page that is still filling in.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    order: Order
+    mandate: MandateView
+    demurrage: DemurrageView
+    quotes: list[QuoteRow]
+    calls: list[CallRecord]
+    commitment: Commitment | None
+    approvals: list[Approval]
+
+
+class CallDetail(BaseModel):
+    """A call with what a model made of it. The brief, the transcript, the anchors."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call: CallRecord
+    report: CallReport | None
+    carrier: Carrier | None
+
+
+class SweepResult(BaseModel):
+    """What the demo button did. Empty on the second press, which is the point."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call_ids: list[str]
