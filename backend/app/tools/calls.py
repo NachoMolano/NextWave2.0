@@ -17,7 +17,11 @@ OWNER: Track E.
 from collections.abc import Callable
 from datetime import datetime
 
+import structlog
+
 from app.domain import CallRecord, CallStatus, EventRow, Store
+
+log = structlog.get_logger(__name__)
 
 __all__ = ["CallLedger"]
 
@@ -90,6 +94,28 @@ class CallLedger:
         if existing.status is CallStatus.ENDED and incoming.status is not CallStatus.ENDED:
             update["status"] = existing.status
         return incoming.model_copy(update=update)
+
+    async def attach_provider_id(self, call_id: str, vapi_call_id: str) -> None:
+        """Re-key a planned call from its placeholder to the id the provider assigned.
+
+        ``plan_rfq`` creates the row before anyone is dialled, because the context has to be
+        frozen at plan time and a quote needs a call to hang off. It has no provider id yet,
+        so it holds ``pending:{order}:{carrier}``.
+
+        Without this the placeholder was never replaced. The first webhook then looked up the
+        real id, missed, and inserted a *second* row -- one with no order, no carrier and no
+        context. Every tool call on that call then answered "I do not have that operation on
+        this call", which is the correct refusal for a call the server cannot place, and the
+        agent held and escalated. The conversation looked fine and the ledger stayed empty.
+        """
+        call = await self._store.call(call_id)
+        if call is None:
+            log.error("calls.attach_provider_id.missing", call_id=call_id)
+            return
+        if call.vapi_call_id == vapi_call_id:
+            return
+        await self._store.upsert_call(call.model_copy(update={"vapi_call_id": vapi_call_id}))
+        log.info("calls.provider_id_attached", call_id=call_id, vapi_call_id=vapi_call_id)
 
     async def anchor_ms(self, call_id: str) -> int:
         """Milliseconds since this call started. The evidence offset, measured by us.

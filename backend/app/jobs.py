@@ -36,6 +36,7 @@ from app.domain import (
     OrderStatus,
     Store,
 )
+from app.tools.calls import CallLedger
 from app.tools.market import Market
 from app.vapi.assistant import profile_from_settings
 from app.vapi.campaign import run_campaign
@@ -117,7 +118,13 @@ async def sweep_deadlines(
 
     if plans:
         if dial is None:
-            await run_campaign(plans, placer, settings, profile=profile_from_settings(settings))
+            # Same re-keying as the injected dialler does; see CallLedger.attach_provider_id.
+            placed = await run_campaign(
+                plans, placer, settings, profile=profile_from_settings(settings)
+            )
+            ledger = CallLedger(store, now=now)
+            for our_id, provider_id in placed.items():
+                await ledger.attach_provider_id(our_id, provider_id)
         else:
             await dial(plans, placer, settings)
     return [plan.call_id for plan in plans]

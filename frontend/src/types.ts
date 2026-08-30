@@ -322,3 +322,47 @@ export interface TraceRow {
   reason_code: string | null
   provenance: string | null
 }
+
+
+/* ------------------------------------------------------------------------ business */
+
+/**
+ * Who Volta works for and where the cargo goes. Read from the database, not the
+ * environment: the warehouse has a street address, a contact and opening hours, it changes
+ * because the business changed rather than because someone redeployed, and the person who
+ * knows it is an operator with a browser.
+ */
+export interface BusinessProfile {
+  display_name: string
+  legal_name: string | null
+  business_type: string
+  city: string | null
+  country: string | null
+  currency: string
+  timezone: string
+  business_hours: string | null
+
+  agent_name: string
+  agent_role: string
+  primary_language: string
+  fallback_language: string
+
+  warehouse_name: string | null
+  warehouse_address: string | null
+  warehouse_city: string | null
+  warehouse_state: string | null
+  warehouse_postal_code: string | null
+  warehouse_country: string | null
+  warehouse_contact_name: string | null
+  warehouse_phone: string | null
+  warehouse_hours: string | null
+  warehouse_notes: string | null
+
+  updated_at: string | null
+  updated_by: string | null
+}
+
+/** Every field optional except the name of whoever is making the change. */
+export type BusinessProfileUpdate = Partial<Omit<BusinessProfile, 'updated_at' | 'updated_by'>> & {
+  updated_by: string
+}

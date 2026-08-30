@@ -133,7 +133,12 @@ class InMemoryStore:
     # --- writes -------------------------------------------------------------------
 
     async def upsert_call(self, call: CallRecord) -> str:
-        existing = await self.call_by_vapi_id(call.vapi_call_id)
+        # An explicit id addresses this row, including when its vapi_call_id is changing --
+        # a planned call being re-keyed from its "pending:" placeholder to the real provider
+        # id. Matching on vapi_call_id alone would miss and mint a second row.
+        existing = (
+            self.calls.get(call.id) if call.id else await self.call_by_vapi_id(call.vapi_call_id)
+        )
         call_id = existing.id if existing and existing.id else _next_id("call", self.calls)
         if existing is None:
             self.calls[call_id] = call.model_copy(update={"id": call_id})

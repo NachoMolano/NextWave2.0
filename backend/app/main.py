@@ -115,7 +115,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         call_placer: CallPlacer,
         call_settings: Settings,
     ) -> dict[str, str]:
-        return await run_campaign(plans, call_placer, call_settings, profile=profile)
+        placed = await run_campaign(plans, call_placer, call_settings, profile=profile)
+        # Re-key each planned row to the id the provider assigned. Without this the row keeps
+        # its "pending:" placeholder, the first webhook fails to find it, and a second row is
+        # inserted with no order attached -- after which every tool call on that call is
+        # correctly refused for want of an operation.
+        for our_id, provider_id in placed.items():
+            await ledger.attach_provider_id(our_id, provider_id)
+        return placed
 
     async def dial_plans(plans: list[DialPlan]) -> object:
         """The portal's dialler, with the placer and settings already bound."""

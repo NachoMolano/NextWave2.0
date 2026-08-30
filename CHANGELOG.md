@@ -16,6 +16,48 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T03:09-0500 · vapi, tools, store, api, frontend · nacho/track-c
+
+Three things: a leak, the bug that was keeping the ledger empty, and the business profile.
+
+**The composed prompt was being published.** Vapi returns it as `artifact.messages[0]` with
+role `system`, and `_turns()` mapped roles through a lookup with an `"other"` fallback -- so it
+was kept, written to `calls.transcript` and rendered in the portal, including the section
+headed FIGURES YOU MUST NEVER SAY OUT LOUD: the mandate ceiling and the negotiation target. It
+also reached the report model as though a person had said it. The role map is now a whitelist;
+an unrecognised role is logged and dropped. The portal filters again on render. **Rows written
+before this fix still contain it** -- the scrub SQL is in PR #10.
+
+**Calls were losing their operation, which is why nothing reached the ledger.** `plan_rfq`
+creates the call row before anyone is dialled, holding `pending:{order}:{carrier}`.
+`run_campaign` returns `{call_id: vapi_call_id}` and **every caller discarded it**, so the
+placeholder was never replaced; the first webhook looked up the real id, missed, and inserted a
+*second* row with no order, no carrier and no context. Every tool call on that call then
+answered "I do not have that operation on this call" -- the correct refusal for a call the
+server cannot place -- and the agent held and escalated. The conversation looked fine and
+nothing was recorded. Across eight real calls: zero quotes, zero decisions, zero commitments.
+
+`CallLedger.attach_provider_id` now re-keys the row, and `upsert_call` honours an explicit id
+so re-keying moves the row rather than minting a second one. That last change is in
+`tests/fakes.py` as well as `store/supabase.py`: the fake had the same behaviour, and a fake
+more permissive than the database makes a green suite mean nothing.
+
+**`company_profile`, and a Business page.** BUILD_PLAN section 2 listed this under "Not
+tables", and for the prompt fields that was right -- an agent name is configuration. The
+warehouse is not: it has a street address, a contact and opening hours, it changes because the
+business changed rather than because someone redeployed, and the person who knows it is an
+operator with a browser. One row, enforced by `check (id = 1)` rather than by everyone
+remembering `limit 1`. Editing requires `updated_by`, for the same reason a mandate does: the
+address is spoken to carriers on a recorded line.
+
+`ruff` and `mypy --strict` clean, 318 passed / 15 skipped, frontend builds, `oxlint` clean.
+
+Affects: **everyone** -- migration 0003 is applied. Anyone testing calls should know the
+correlation fix is what makes the Decision Trace, the comparison and any commitment possible
+at all; before it, every real call produced an empty ledger.
+
+---
+
 ## 2026-08-30T01:52-0500 · frontend · nacho/track-c
 
 The portal, brought over from the old repo's control tower and rewired to `/api`. `dashboard/`
