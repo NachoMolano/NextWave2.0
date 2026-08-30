@@ -22,6 +22,7 @@ it never writes. Every write on this path goes through ``tools/``, which is wher
 STATUS: built. OWNER: Track B.
 """
 
+import json
 from typing import Any
 
 import structlog
@@ -65,6 +66,41 @@ def single_line(text: str) -> str:
     if len(collapsed) > _MAX_RESULT_CHARS:
         return collapsed[: _MAX_RESULT_CHARS - 1].rstrip() + "…"
     return collapsed
+
+
+def _name_and_arguments(entry: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    """Read one tool call out of either envelope Vapi sends.
+
+    Vapi mirrors the shape the tool was *defined* in. ``build_tool_definitions`` writes the
+    OpenAI-style ``{"type": "function", "function": {...}}`` form, and the callback comes
+    back the same way -- name under ``function``, arguments as a JSON *string*. The flat
+    ``{"name": ..., "arguments": {...}}`` form in the docs is what the older tool config
+    produces. Both are accepted because guessing which one is live is what broke this:
+    every test passed against a fixture written from the docs and never captured, while in
+    production every propose_quote came back "that tool is not available on this call" and
+    two carrier quotes were lost.
+
+    Returns ``(None, None)`` for anything unrecognised rather than raising: the caller
+    already holds and escalates on a name it does not know.
+    """
+    function = entry.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        raw = function.get("arguments")
+    else:
+        name = entry.get("name")
+        raw = entry.get("arguments")
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            # A malformed argument string is not a partial fact. The caller holds.
+            return (name if isinstance(name, str) else None), None
+    return (
+        name if isinstance(name, str) else None,
+        raw if isinstance(raw, dict) else None,
+    )
 
 
 def _error(tool_call_id: str, message: str) -> dict[str, str]:
@@ -149,9 +185,13 @@ def create_tool_router(
                 log.warning("vapi.tools.tool_call_without_id", name=entry.get("name"))
                 continue
 
-            name = entry.get("name")
+            name, arguments = _name_and_arguments(entry)
             if not isinstance(name, str) or name not in TOOL_ARGUMENT_MODELS:
-                log.warning("vapi.tools.unknown_tool", name=name)
+                # The keys are logged, not the values: an unrecognised envelope is the one
+                # case where we need to see the shape, and the values are caller speech.
+                log.warning(
+                    "vapi.tools.unknown_tool", name=name, entry_keys=sorted(entry.keys())
+                )
                 results.append(_error(tool_call_id, _UNKNOWN_TOOL))
                 continue
 
@@ -160,8 +200,8 @@ def create_tool_router(
                 results.append(_error(tool_call_id, HOLD_AND_ESCALATE))
                 continue
 
-            arguments = entry.get("arguments")
             if not isinstance(arguments, dict):
+                log.warning("vapi.tools.unparseable_arguments", name=name)
                 results.append(_error(tool_call_id, HOLD_AND_ESCALATE))
                 continue
 

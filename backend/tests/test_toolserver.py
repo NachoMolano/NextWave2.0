@@ -8,6 +8,7 @@ string, or invariant #6 inverts: a crash in the code that refuses things becomes
 Everything here runs with no network, no database and no phone call.
 """
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -27,7 +28,7 @@ from app.tools.model import (
     ReportIncidentArgs,
     VerifyCallerArgs,
 )
-from app.vapi.toolserver import create_tool_router
+from app.vapi.toolserver import HOLD_AND_ESCALATE, create_tool_router
 from tests.fakes import InMemoryStore
 
 SECRET = "shared-secret-for-tests"
@@ -442,3 +443,94 @@ def test_every_tool_name_has_a_handler_on_track_as_class() -> None:
     for name in TOOL_ARGUMENT_MODELS:
         handler: Callable[..., Any] | None = getattr(ModelTools, name, None)
         assert callable(handler), f"tools/model.py has no handler named {name}"
+
+
+# --- the envelope Vapi actually sends -------------------------------------------------
+#
+# The fixture above was written from docs.vapi.ai and never captured from a live call, and
+# it is wrong. In production every propose_quote came back "That tool is not available on
+# this call": Vapi mirrors the shape the tool was *defined* in, and build_tool_definitions
+# writes the OpenAI-style {"type": "function", "function": {...}} form, so the callback
+# carries the name under "function" and the arguments as a JSON string. Two carrier quotes
+# were lost to this while this whole file stayed green.
+
+NESTED_TOOL_CALL_ID = "call_lDoxFYNlQTASX9GfefdfMGO7"
+
+
+def _nested_propose_quote_call(tool_call_id: str = NESTED_TOOL_CALL_ID) -> dict[str, Any]:
+    """One toolCallList entry as captured from Vapi call
+    01a0522a-9413-7000-9840-2ea58ebd6475 on 2026-08-30, arguments verbatim."""
+    return {
+        "id": tool_call_id,
+        "type": "function",
+        "function": {
+            "name": "propose_quote",
+            "arguments": json.dumps(
+                {
+                    "components": [{"name": "linehaul", "amount": "15000", "currency": "MXN"}],
+                    "cost_is_final": True,
+                    "pickup_date": "2026-09-03",
+                    "equipment": "40-foot container chassis",
+                    "claimed_identity": "Ana Beltran",
+                }
+            ),
+        },
+    }
+
+
+async def test_the_nested_function_envelope_reaches_the_handler() -> None:
+    """The regression that cost two live carrier quotes."""
+    store = InMemoryStore()
+    call_id = await _seed_call(store)
+    tools = ScriptedTools(store)
+
+    status_code, body = await _post(tools, store, _envelope(_nested_propose_quote_call()))
+
+    assert status_code == 200
+    result = body["results"][0]
+    assert "error" not in result, result
+    assert result["toolCallId"] == NESTED_TOOL_CALL_ID
+    assert [name for name, _, _ in tools.seen] == ["propose_quote"]
+    assert tools.seen[0][1] == call_id
+
+
+async def test_the_nested_envelope_arguments_arrive_as_the_validated_model() -> None:
+    """The JSON string must be parsed before Track A's model sees it, not passed through."""
+    store = InMemoryStore()
+    await _seed_call(store)
+    tools = ScriptedTools(store)
+
+    await _post(tools, store, _envelope(_nested_propose_quote_call()))
+
+    args = tools.seen[0][2]
+    assert isinstance(args, ProposeQuoteArgs)
+    assert args.components[0].currency == "MXN"
+    assert args.components[0].amount == "15000"
+    assert args.claimed_identity == "Ana Beltran"
+
+
+async def test_the_flat_envelope_still_dispatches() -> None:
+    """A widening, not a swap: the documented shape must keep working."""
+    store = InMemoryStore()
+    await _seed_call(store)
+    tools = ScriptedTools(store)
+
+    _, body = await _post(tools, store, _envelope(_propose_quote_call()))
+
+    assert "error" not in body["results"][0]
+    assert [name for name, _, _ in tools.seen] == ["propose_quote"]
+
+
+async def test_an_unparseable_argument_string_holds_and_dispatches_nothing() -> None:
+    """A JSON string that does not parse is not a partial fact."""
+    entry = _nested_propose_quote_call()
+    entry["function"]["arguments"] = "{not json"
+    store = InMemoryStore()
+    await _seed_call(store)
+    tools = ScriptedTools(store)
+
+    status_code, body = await _post(tools, store, _envelope(entry))
+
+    assert status_code == 200
+    assert body["results"][0]["error"] == HOLD_AND_ESCALATE
+    assert tools.seen == []
