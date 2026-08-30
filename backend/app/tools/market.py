@@ -14,6 +14,7 @@ OWNER: Track E.
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
+from typing import Protocol, cast
 
 from app.domain import (
     Approval,
@@ -25,6 +26,7 @@ from app.domain import (
     CallDirection,
     CallPhase,
     CallRecord,
+    CallStatus,
     Carrier,
     Comparison,
     ComparisonEntry,
@@ -42,11 +44,46 @@ from app.domain import (
 )
 from app.policy import evaluate_quote, select_best
 
-__all__ = ["Market"]
+__all__ = ["DIAL_ROUND_PLACED_NOTHING", "Market"]
+
+
+class CallListingStore(Store, Protocol):
+    """``Store`` plus the one read the retry guard needs.
+
+    Declared here the way ``jobs.py`` declares its own rather than widening ``ports.py``:
+    the contract four tracks build against does not change for a guard used in one place.
+    """
+
+    async def calls_for(self, order_id: str) -> list[CallRecord]: ...
 
 #: Quote states that are still in the running. A superseded or withdrawn row stays on disk
 #: as evidence but takes no part in the comparison -- it was replaced by a later utterance.
 _LIVE_QUOTES = frozenset({QuoteStatus.PROPOSED, QuoteStatus.SELECTED})
+
+
+#: Written to ``calls.ended_reason`` when a whole dial round reached the provider for nobody.
+#: It is the marker ``_dial_attempt`` counts, so it is a value and not a log line.
+DIAL_ROUND_PLACED_NOTHING = "rfq dial round placed nothing"
+
+
+def _spoken_window(order: Order) -> str | None:
+    """The mandate's pickup window, in the grammar the prompt reads back.
+
+    This was simply missing, and the cost was not cosmetic. The agent went onto a live call
+    with no pickup window at all, invented one -- "pickup on or around April thirtieth",
+    against a mandate of 1-3 September -- and policy then denied its own quote for
+    ``invalid_window``. Negotiating blind on the one dimension the ceiling is checked
+    against is worse than not negotiating.
+
+    The same-month form matches ``prompts._runtime_pickup_answer`` exactly, so the agent
+    gets the short spoken answer for "when?" instead of composing one.
+    """
+    start, end = order.pickup_not_before, order.pickup_not_after
+    if start is None or end is None:
+        return None
+    if start.year == end.year and start.month == end.month:
+        return f"between {start:%B} {start.day} and {start:%B} {end.day}, {start.year}"
+    return f"between {start:%B} {start.day} and {end:%B} {end.day}, {end.year}"
 
 
 class Market:
@@ -69,12 +106,13 @@ class Market:
         # this path did not, because the event was appended at the end and its answer thrown
         # away. Two portals -- a local one and the deployed one -- pointed at one database would
         # both have planned and both have dialled.
+        attempt = await self._dial_attempt(order)
         claimed = await self._store.append_event(
             EventRow(
                 order_id=order.id,
                 type="rfq.planned",
-                payload={"mandate_version": order.mandate_version},
-                idempotency_key=f"rfq-planned:{order.id}:{order.mandate_version}",
+                payload={"mandate_version": order.mandate_version, "attempt": attempt},
+                idempotency_key=f"rfq-planned:{order.id}:{order.mandate_version}:{attempt}",
             )
         )
         if not claimed:
@@ -207,6 +245,7 @@ class Market:
         return CallContext(
             phase=CallPhase.RFQ,
             today=self._now().strftime("%A, %d %B %Y"),
+            pickup_window=_spoken_window(order),
             reference=order.reference,
             origin=order.origin,
             destination=order.destination,
@@ -223,6 +262,47 @@ class Market:
             quotes_in_hand=in_hand,
             best_rate_so_far=best,
         )
+
+    async def _dial_attempt(self, order: Order) -> int:
+        """How many RFQ dial rounds on this order have placed nothing at all.
+
+        The market claim is keyed on this. A round that reached the provider -- even
+        partially -- leaves no stranded rows and never advances it, so a completed market
+        cannot be re-dialled and two instances racing compute the same number and only one
+        of them claims. A round that placed nothing marks its own rows, which is what makes
+        the next click a real retry instead of a silent no-op.
+        """
+        try:
+            calls = await cast(CallListingStore, self._store).calls_for(order.id)
+        except (AttributeError, NotImplementedError):
+            # A store without the listing read keeps the old behaviour: claim once.
+            return 0
+        return sum(
+            1
+            for call in calls
+            if call.phase == CallPhase.RFQ.value and call.ended_reason == DIAL_ROUND_PLACED_NOTHING
+        )
+
+    async def mark_dial_round_failed(self, plans: list[DialPlan]) -> None:
+        """Record that this round reached nobody, and release the market for a retry.
+
+        Called only when *zero* calls were placed. A partial round leaves its unplaced rows
+        alone: re-dialling three carriers because one of them failed would ring the two that
+        answered a second time.
+        """
+        for plan in plans:
+            call = await self._store.call(plan.call_id)
+            if call is None:
+                continue
+            await self._store.upsert_call(
+                call.model_copy(
+                    update={
+                        "status": CallStatus.FAILED,
+                        "ended_at": self._now(),
+                        "ended_reason": DIAL_ROUND_PLACED_NOTHING,
+                    }
+                )
+            )
 
     async def rank(self, order: Order) -> Comparison:
         """Re-evaluate every quote against the current mandate, then select the best.

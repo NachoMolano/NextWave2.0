@@ -317,7 +317,21 @@ def create_api_router(
             # claimed, so a second click -- or a second instance pointed at the same database
             # -- reaches this line with an empty list and dials nobody.
             if plans:
-                await dial(plans)
+                placed = await dial(plans)
+                # run_campaign swallows each dial failure so one bad carrier cannot take the
+                # batch down, which meant a round that reached *nobody* returned 200 and the
+                # portal said "collecting quotes" over three rows that would never ring. A
+                # total failure is not a market: say so, and release it for a real retry.
+                if not placed:
+                    await market.mark_dial_round_failed(plans)
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Nobody was dialled: the telephony provider refused every call. "
+                            "Nothing was recorded and the market is still open, so this can "
+                            "be retried once the provider is reachable."
+                        ),
+                    )
         return await get_order(order_id)
 
     @router.get("/orders/{order_id}/comparison")

@@ -104,6 +104,44 @@ async def test_the_frozen_context_carries_the_market_as_of_dial_time() -> None:
     assert plans[0].context["best_rate_so_far"] == "8500"
 
 
+async def test_the_context_carries_the_mandate_pickup_window() -> None:
+    """It carried none, and the agent invented one on a live call.
+
+    With ``pickup_window`` unset the agent had no date to quote against and improvised
+    "pickup on or around April thirtieth" against a mandate of 2-4 September -- then policy
+    denied its own quote for invalid_window. The grammar matches
+    ``prompts._runtime_pickup_answer`` so the spoken answer to "when?" is read, not composed.
+    """
+    _store, market = seeded()
+
+    plans = await market.plan_rfq(order(), 3)
+
+    assert plans[0].context["pickup_window"] == "between September 2 and September 4, 2026"
+
+
+async def test_a_window_spanning_two_months_still_reads_as_a_window() -> None:
+    _store, market = seeded()
+
+    plans = await market.plan_rfq(
+        order(
+            pickup_not_before=datetime(2026, 8, 30, tzinfo=UTC),
+            pickup_not_after=datetime(2026, 9, 2, tzinfo=UTC),
+        ),
+        3,
+    )
+
+    assert plans[0].context["pickup_window"] == "between August 30 and September 2, 2026"
+
+
+async def test_no_mandate_window_carries_no_window_rather_than_a_guess() -> None:
+    """Absent stays absent. A rendered empty window is an invitation to fill it in."""
+    _store, market = seeded()
+
+    plans = await market.plan_rfq(order(pickup_not_before=None, pickup_not_after=None), 3)
+
+    assert plans[0].context["pickup_window"] is None
+
+
 async def test_the_context_never_carries_a_figure_the_carrier_did_not_give() -> None:
     """The ceiling is in the prompt so the agent can negotiate; policy still decides."""
     _store, market = seeded()

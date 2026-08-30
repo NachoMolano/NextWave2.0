@@ -116,12 +116,15 @@ class FakeMarket:
     ) -> None:
         self.planned: list[tuple[str, int]] = []
         self.awarded: list[str] = []
+        self.failed_rounds: list[list[str]] = []
+        self._planned_ids: set[str] = set()
         self.award_conflict = award_conflict
         self.store = store
 
     async def plan_rfq(self, order: Order, count: int) -> list[DialPlan]:
         already = any(planned == str(order.id) for planned, _ in self.planned)
         self.planned.append((str(order.id), count))
+        self._planned_ids.add(str(order.id))
         if already:
             return []
         if self.store is not None:
@@ -137,6 +140,12 @@ class FakeMarket:
             )
             for index in range(count)
         ]
+
+    async def mark_dial_round_failed(self, plans: list[DialPlan]) -> None:
+        self.failed_rounds.append([plan.call_id for plan in plans])
+        # The real one releases the claim by marking the rows, so the next plan_rfq is a
+        # fresh attempt rather than a silent no-op.
+        self.planned = [entry for entry in self.planned if entry[0] not in self._planned_ids]
 
     async def rank(self, order: Order) -> Comparison:
         return Comparison(
@@ -159,11 +168,16 @@ class FakeMarket:
 class FakeDialler:
     """Records what would have been dialled. Never touches the network."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, places: bool = True) -> None:
         self.batches: list[list[DialPlan]] = []
+        #: False reproduces a round where the provider refused every call. run_campaign
+        #: swallows each failure, so what reaches the route is an empty dict, not a raise.
+        self.places = places
 
     async def __call__(self, plans: list[DialPlan]) -> object:
         self.batches.append(plans)
+        if not self.places:
+            return {}
         return {plan.call_id: f"vapi-{plan.call_id}" for plan in plans}
 
     @property
@@ -491,6 +505,39 @@ def test_approving_an_award_releases_the_award_call() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "approved"
     assert market.awarded == [order_id]
+
+
+def test_a_dial_round_that_places_nothing_is_a_502_not_a_silent_200() -> None:
+    """run_campaign swallows each dial failure so one bad carrier cannot take the batch
+    down. A round that reached *nobody* was therefore indistinguishable from success: the
+    portal showed "collecting quotes" over three rows that would never ring, and Vapi had
+    no record of any call. Three carriers were left un-dialled that way on 30 Aug."""
+    client, _, market, _, _ = build(dial=FakeDialler(places=False))
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+
+    response = client.post(f"/api/orders/{order_id}/rfq")
+
+    assert response.status_code == 502
+    assert "Nobody was dialled" in response.json()["detail"]
+    assert market.failed_rounds, "the round must be marked so the market can be retried"
+
+
+def test_a_failed_dial_round_can_be_retried() -> None:
+    """The claim was written before the dial and never released, so after a failed round
+    every retry returned an empty plan list and dialled nobody. The order was stuck on that
+    mandate version -- the only escape was raising the ceiling to bump it."""
+    client, _, _, _, dial = build(dial=FakeDialler(places=False))
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+    assert client.post(f"/api/orders/{order_id}/rfq").status_code == 502
+
+    dial.places = True
+    retry = client.post(f"/api/orders/{order_id}/rfq")
+
+    assert retry.status_code == 200
+    assert len(dial.batches) == 2, "the retry must actually dial, not plan an empty list"
+    assert dial.numbers_dialled, "the retry placed no calls"
 
 
 def test_approving_an_award_with_no_candidate_is_a_409_that_says_why() -> None:
