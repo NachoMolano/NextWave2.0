@@ -226,17 +226,7 @@ def test_placer_never_dials_in_the_suite() -> None:
         CallPhase.AWARD,
         CallPhase.RENEGOTIATION,
         CallPhase.INBOUND,
-        pytest.param(
-            CallPhase.STATUS_CHECK,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="Track D owes _STATUS_CHECK and its greetings. Phase 0 added the enum "
-                "member because vapi/ and jobs/ need to name the phase; the prose is not "
-                "written yet. strict=True means this test FAILS once the block lands, which "
-                "is the point: it forces whoever writes it to delete this marker rather than "
-                "leave a stale exemption behind.",
-            ),
-        ),
+        CallPhase.STATUS_CHECK,
     ],
     ids=lambda phase: phase.value,
 )
