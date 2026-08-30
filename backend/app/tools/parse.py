@@ -21,7 +21,7 @@ import re
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
-__all__ = ["Ambiguous", "parse_amount", "parse_date"]
+__all__ = ["Ambiguous", "date_states_a_time", "parse_amount", "parse_date"]
 
 
 class Ambiguous:
@@ -238,6 +238,22 @@ def parse_amount(text: str) -> tuple[Decimal, str] | Ambiguous | None:
     if parsed is None:
         return Ambiguous(heard=match.group(0), why="the figure could not be read a single way")
     return parsed
+
+
+def date_states_a_time(text: str) -> bool:
+    """Did the utterance carry a clock time, or only a day?
+
+    "September fourth" is a day. "2026-09-04T14:00" is a moment. Both currently resolve to a
+    datetime, and the difference is lost the instant ``parse_date`` returns -- which is how a
+    pickup nobody put an hour on ends up stored at midnight UTC and judged, to the minute,
+    against a window an operator typed in local business hours.
+
+    Kept beside ``parse_date`` and derived from the same regex rather than inferred later from
+    a 00:00 timestamp. A midnight that was actually spoken and a midnight that was never
+    spoken are different facts, and only the utterance can tell them apart.
+    """
+    match = _ISO_DATE.search(text or "")
+    return match is not None and match.group("hour") is not None
 
 
 def parse_date(text: str, today: date) -> datetime | Ambiguous | None:

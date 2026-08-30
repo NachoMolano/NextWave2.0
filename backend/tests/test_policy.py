@@ -142,6 +142,48 @@ def test_a_pickup_outside_the_window_is_refused() -> None:
     assert decision.reason is ReasonCode.INVALID_WINDOW
 
 
+def test_a_day_inside_the_window_is_allowed_even_at_midnight() -> None:
+    """The first day of the window, offered as a day, is inside the window.
+
+    A carrier who says "September second" against a window opening 02 Sept 08:00 local is
+    offering the day the mandate asked for. Their date resolves to midnight UTC because no
+    clock time was ever spoken, and judging that midnight to the minute refused them for
+    being eight hours early to a window their utterance never addressed.
+    """
+    a_day = proposal(pickup_at=datetime(2026, 9, 2, tzinfo=UTC), pickup_is_date_only=True)
+
+    decision = evaluate_quote(
+        mandate(pickup_not_before=datetime(2026, 9, 2, 13, 0, tzinfo=UTC)), a_day, {}, now=NOW
+    )
+
+    assert decision.outcome is PolicyOutcome.ALLOW
+
+
+def test_a_day_past_the_window_is_still_refused() -> None:
+    """Judging a date as a day is not judging it loosely. The sixth is not inside the fourth."""
+    a_day = proposal(pickup_at=datetime(2026, 9, 6, tzinfo=UTC), pickup_is_date_only=True)
+
+    decision = evaluate_quote(mandate(), a_day, {}, now=NOW)
+
+    assert decision.outcome is PolicyOutcome.DENY
+    assert decision.reason is ReasonCode.INVALID_WINDOW
+
+
+def test_a_stated_clock_time_outside_the_window_is_refused_to_the_minute() -> None:
+    """A moment somebody actually named keeps the exact comparison. Nothing here loosened.
+
+    The window closes at 23:59 on the fourth; a pickup named for one minute past it is out,
+    and the default on the flag means every caller that cannot tell a day from a moment gets
+    this reading rather than the other one.
+    """
+    late = proposal(pickup_at=datetime(2026, 9, 5, 0, 0, tzinfo=UTC))
+
+    decision = evaluate_quote(mandate(), late, {}, now=NOW)
+
+    assert decision.outcome is PolicyOutcome.DENY
+    assert decision.reason is ReasonCode.INVALID_WINDOW
+
+
 def test_the_wrong_equipment_is_outside_the_mandate() -> None:
     decision = evaluate_quote(mandate(), proposal(equipment="reefer"), {}, now=NOW)
 

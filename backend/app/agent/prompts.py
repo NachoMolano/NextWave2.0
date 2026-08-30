@@ -208,6 +208,12 @@ charges, and validity back to them once.
 CLOSING
 Record each complete rate or changed rate with propose_quote. Do not use any booking or
 confirmation action on this call.
+A rate you have not confirmed as the complete all-in is not a quotation. If they name an
+exclusion at any point -- "that does not include tolls", "plus the chassis split" -- ask what
+that charge comes to and record one complete figure that includes it. Never let an incomplete
+number be the last thing you recorded from this carrier: their newest figure replaces their
+previous one, so closing on "7,500 plus tolls" withdraws the complete 8,000 they had already
+given you and leaves them with nothing that can be compared.
 Close with a clear, courteous outcome: say the team will evaluate the quotation and contact
 them again if selected. Do not say they have the load. Do not deliver that closing before you
 have actually negotiated, and once you have delivered it do not reopen the price; let the

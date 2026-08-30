@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.domain import (
+    ApprovalReason,
     CallDirection,
     CallRecord,
     CallReport,
@@ -94,6 +95,36 @@ async def test_award_report_sends_official_recap_and_books_only_after_delivery()
     assert message.to_address == "dispatch@example.com"
     assert "00:12.345" in message.body
     assert "https://recordings.example/call-1.wav" in message.body
+
+
+async def test_an_award_call_that_confirmed_nothing_says_so() -> None:
+    """Silence here is an order stuck in AWARDING with nothing on the screen about it.
+
+    An award call ending without a confirmed pre-agreement is a legitimate outcome -- the
+    terms had moved, the recap was never assented to. What is not legitimate is returning
+    quietly: the carrier was never confirmed, no email is owed to anyone, and the only party
+    who can move it is a person who has not been told.
+    """
+    store = InMemoryStore()
+    notifier = RecordingNotifier()
+    coordinator = CommitmentCoordinator(store, notifier, now=lambda: NOW)
+    call = CallRecord(
+        id="call-1",
+        vapi_call_id="vapi-1",
+        direction=CallDirection.OUTBOUND,
+        phase="award",
+        order_id="order-1",
+        carrier_id="carrier-1",
+    )
+    await store.upsert_call(call)
+    after_report = build_after_report(store, notifier, coordinator, Settings(), now=lambda: NOW)
+
+    await after_report(call, CallReport(call_id="call-1", summary="Terms had changed."))
+
+    assert notifier.sent == [], "nothing was confirmed, so nothing is confirmed in writing"
+    raised = list(store.approvals.values())
+    assert [a.reason for a in raised] == [ApprovalReason.POLICY_FAILURE]
+    assert "no confirmed pre-agreement" in str(raised[0].context["detail"])
 
 
 async def test_incident_report_notifies_manager_by_both_channels_once() -> None:

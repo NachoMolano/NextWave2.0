@@ -59,7 +59,7 @@ from app.domain import (
 from app.policy import evaluate_quote, require_preagreement_evidence
 from app.tools.calls import CallLedger
 from app.tools.commitments import CommitmentCoordinator
-from app.tools.parse import Ambiguous, parse_amount, parse_date
+from app.tools.parse import Ambiguous, date_states_a_time, parse_amount, parse_date
 
 __all__ = [
     "RESPONSES",
@@ -282,6 +282,10 @@ class ModelTools:
         pickup = parse_date(args.pickup_date, self._now().date())
         if isinstance(pickup, Ambiguous) or pickup is None:
             return RESPONSES["date_unclear"]
+        # "The fourth" is a day; "the fourth at two" is a moment. Kept apart here because this
+        # is the last place that can still see the utterance -- one line later it is a
+        # timestamp, and a midnight nobody said looks exactly like one somebody did.
+        pickup_is_date_only = not date_states_a_time(args.pickup_date)
 
         window_end = parse_date(args.pickup_window_end or "", self._now().date())
         valid_until = parse_date(args.valid_until or "", self._now().date())
@@ -317,6 +321,7 @@ class ModelTools:
             components=[c.model_dump(mode="json") for c in components],
             cost_is_final=args.cost_is_final,
             pickup_at=pickup,
+            pickup_is_date_only=pickup_is_date_only,
             pickup_window_end=window_end,
             equipment=args.equipment,
             valid_until=valid_until,
@@ -338,6 +343,7 @@ class ModelTools:
             components=tuple(components),
             cost_is_final=args.cost_is_final,
             pickup_at=pickup,
+            pickup_is_date_only=pickup_is_date_only,
             equipment=args.equipment,
             valid_until=valid_until,
             source_call_id=call_id,

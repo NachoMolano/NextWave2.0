@@ -506,8 +506,6 @@ def create_api_router(
                         ),
                         body.quote_id or "",
                     )
-                    if notify_award_decision is not None:
-                        await notify_award_decision(order, quote_id)
                     plans = await market.plan_award(order, quote_id)
                     if plans:
                         placed = await dial(plans)
@@ -521,6 +519,13 @@ def create_api_router(
                                     "remains open and can be retried safely."
                                 ),
                             )
+                    # After the winner's call is placed, not before. The non-winners were
+                    # being told they had lost while the confirmation call had not been
+                    # attempted -- and a provider that refused it leaves this endpoint at 502
+                    # with the approval still open, so the market a person retries is one
+                    # every loser has already been written out of.
+                    if notify_award_decision is not None:
+                        await notify_award_decision(order, quote_id)
             await store.resolve_approval(
                 approval_id,
                 status=body.status,

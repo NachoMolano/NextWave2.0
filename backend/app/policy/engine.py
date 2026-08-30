@@ -47,6 +47,33 @@ def _decision(
     )
 
 
+def _pickup_is_inside(mandate: Mandate, proposal: QuoteProposal) -> bool:
+    """Is this pickup within the granted window?
+
+    Two comparisons, because a carrier can offer two different kinds of thing. "The fourth,
+    at two in the afternoon" is a moment, and a moment is judged to the minute. "The fourth"
+    is a *day*, and judging a day to the minute means judging an hour nobody said: a bare
+    date resolves to midnight, so a carrier offering the first day of the window was refused
+    for being eight hours early to a window their own utterance never addressed.
+
+    The alternative -- resolving a bare date to some plausible hour -- is worse. It invents a
+    term, and that invented hour then travels into the recap the carrier is asked to confirm.
+    Better to keep the date exactly as spoken and compare it as what it is.
+
+    Both sides are read in UTC. That holds while the window is business hours somewhere in
+    the Americas, where 08:00-18:00 local stays inside one UTC day; a window whose local day
+    straddles midnight UTC would need the mandate to carry its timezone, and policy takes no
+    configuration, so this is stated rather than silently assumed.
+    """
+    if proposal.pickup_is_date_only:
+        return (
+            mandate.pickup_not_before.date()
+            <= proposal.pickup_at.date()
+            <= mandate.pickup_not_after.date()
+        )
+    return mandate.pickup_not_before <= proposal.pickup_at <= mandate.pickup_not_after
+
+
 def evaluate_quote(
     mandate: Mandate,
     proposal: QuoteProposal,
@@ -71,7 +98,7 @@ def evaluate_quote(
         return _decision(mandate, proposal, PolicyOutcome.ESCALATE, ReasonCode.INCOMPLETE_COST)
     if proposal.valid_until < now:
         return _decision(mandate, proposal, PolicyOutcome.DENY, ReasonCode.STALE_EVIDENCE)
-    if not (mandate.pickup_not_before <= proposal.pickup_at <= mandate.pickup_not_after):
+    if not _pickup_is_inside(mandate, proposal):
         return _decision(mandate, proposal, PolicyOutcome.DENY, ReasonCode.INVALID_WINDOW)
     if proposal.equipment not in mandate.allowed_equipment:
         return _decision(mandate, proposal, PolicyOutcome.DENY, ReasonCode.OUTSIDE_MANDATE)

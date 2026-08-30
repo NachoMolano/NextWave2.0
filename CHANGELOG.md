@@ -16,6 +16,61 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T08:18-0500 · domain, policy, tools, jobs, api, agent, frontend · diego
+
+**One round.** Closing a market planned a renegotiation round and dialled every carrier who
+had answered a second time, seconds after the first call ended. It cost each carrier a second
+call and moved the decision further away rather than closer: the comparison a person finally
+approved had been ranked *before* those second calls landed, so on OP-MZO-0005 apalache's
+7,750 all-in -- eligible, in window, under the ceiling -- arrived after the ranking was frozen
+and never reached the screen. The improvement pass belongs inside the one call, where the
+agent already negotiates. `Market.plan_renegotiation` is gone with the branch that called it;
+`CallPhase.RENEGOTIATION` and its prompt block stay, because call rows on disk carry that
+phase and still have to render and replay.
+→ Affects: Track E. `timeout_open_markets` no longer takes `placer` or `dial`.
+
+**A pickup with no clock time is now a day, not a midnight.** `parse_date` resolves a bare
+date to 00:00 UTC, and policy compared that invented hour, to the minute, against a window an
+operator typed in local business hours -- so a carrier offering the *first* day of the window
+was refused for being eight hours early to a clock time nobody spoke, and the portal rendered
+"September 6" as "05 Sept, 19:00" beside a refusal about a window ending 18:00. New:
+`parse.date_states_a_time`, `QuoteProposal.pickup_is_date_only`, `QuoteRow.pickup_is_date_only`,
+`0005_pickup_is_date_only.sql`, and a day-based branch in the window check. The default is
+`False` -- the strict instant reading -- so every existing row and caller keeps the comparison
+it was judged under and the looser path is opt-in at the one place that can still see the
+utterance. The ceiling is untouched.
+→ Affects: Track A and Track C. Applied to the hosted database; `supabase db push` for local.
+
+**The RFQ prompt no longer lets an incomplete total be the last word.** Apalache offered 8,000
+all-in, improved to 7,500, then said "the cost does not include tolls". The tool answered
+*"Is that the final all-in cost?"* and the agent said goodbye, so their standing quote was an
+incomplete total -- and because a newer figure supersedes an older one, the complete 8,000 was
+already withdrawn. Closing rule added: ask what the exclusion comes to and record one complete
+figure, and never close on an incomplete one.
+
+**The award path, tightened at both ends.** The non-winners were emailed *before* the winner's
+confirmation call was placed, so a provider that refused that call left a 502, an open
+approval, and a market every loser had already been written out of; the send now follows a
+successful dial. And an award call that ended with no confirmed pre-agreement returned in
+silence, leaving the order in `AWARDING` with nothing on screen -- it now raises the same
+escalation as the missing-email case, with an `award.unconfirmed` event.
+→ Affects: Track C, Track E.
+
+**The order page has one decision on it.** The rail column of escalations is gone: one card per
+refused quote, each offering an *Approve* that authorized nothing, saying again -- smaller --
+what the comparison already says with the action attached. They are still raised, still
+audited, still in the Approvals inbox, and the ranked comparison still closes the ones it
+answers.
+→ Affects: nobody. Frontend only.
+
+**Not shipped, and it blocks the award call:** `confirm_preagreement` is withheld from the
+assistant unless `RECORDING_ENABLED=true` (`vapi/assistant.py`), and that key is absent from
+`backend/.env`, so on a live award call the prompt orders a tool the model does not have --
+no commitment opens and no confirmation email is owed. `RESEND_API_KEY` / `NOTIFY_FROM_EMAIL`
+are empty too, which makes the notifier the `NullNotifier` that always fails. Both are
+deployment decisions (recording needs a consent notice, which the config enforces), so they
+are named here rather than changed.
+
 ## 2026-08-30T07:36-0500 · api, tools/market, frontend · diego
 
 **Quotes now say who said them.** `OrderAggregate` gained a `carriers` list -- every carrier

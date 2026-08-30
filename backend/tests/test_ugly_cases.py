@@ -170,6 +170,43 @@ async def test_boss_already_approved_is_outside_mandate() -> None:
     assert "9,000" not in result and "9000" not in result, "the cap must not leak in the reply"
 
 
+async def test_a_date_with_no_clock_time_is_recorded_as_a_day() -> None:
+    """"September the second" is a day. Nothing may turn it into an hour.
+
+    The date resolves to midnight because that is where a date with no time lands, and the
+    row now says so -- so policy compares the day the carrier named against the days the
+    mandate granted, instead of refusing a pickup on the window's opening day for being
+    eight hours early to a clock time nobody spoke.
+    """
+    world = World()
+    call_id = await world.call("vapi-1")
+
+    result = await world.tools.propose_quote(
+        call_id, quote_args("8500", pickup_date="2026-09-02")
+    )
+
+    assert result == RESPONSES["quote_recorded"]
+    quote = next(iter(await world.store.quotes_for("order-1")))
+    assert quote.pickup_is_date_only is True
+    assert (PolicyOutcome.ALLOW.value, ReasonCode.ALLOWED.value) in await decisions_for(world)
+
+
+async def test_a_pickup_with_a_stated_hour_keeps_the_exact_moment() -> None:
+    """A time somebody actually named is judged to the minute, as it always was."""
+    world = World()
+    call_id = await world.call("vapi-1")
+
+    await world.tools.propose_quote(
+        call_id, quote_args("8500", pickup_date="2026-09-05T08:00:00")
+    )
+
+    quote = next(iter(await world.store.quotes_for("order-1")))
+    assert quote.pickup_is_date_only is False
+    assert (PolicyOutcome.DENY.value, ReasonCode.INVALID_WINDOW.value) in await decisions_for(
+        world
+    )
+
+
 # ---------------------------------------------------------------------------------- row 2
 
 

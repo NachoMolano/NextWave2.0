@@ -91,6 +91,12 @@ class QuoteProposal(BaseModel):
     components: tuple[CostComponent, ...] = Field(min_length=1)
     cost_is_final: bool
     pickup_at: datetime
+    pickup_is_date_only: bool = Field(
+        default=False,
+        description="True when the carrier named a day and no clock time. False means the "
+        "instant is real and is judged to the minute. The default is the strict reading, so "
+        "a caller that cannot tell the difference never loosens the window by omission.",
+    )
     equipment: str = Field(min_length=1)
     valid_until: datetime
     source_call_id: str = Field(min_length=1)

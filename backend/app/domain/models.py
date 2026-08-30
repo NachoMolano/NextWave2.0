@@ -347,6 +347,12 @@ class QuoteRow(BaseModel):
         "final, and a total that is not final cannot be authorized.",
     )
     pickup_at: datetime
+    pickup_is_date_only: bool = Field(
+        default=False,
+        description="The carrier named a day, not a moment. Stored rather than inferred from "
+        "a midnight timestamp: a midnight somebody said and a midnight nobody said are "
+        "different facts, and only the utterance can tell them apart.",
+    )
     pickup_window_end: datetime | None = None
     equipment: str
     valid_until: datetime

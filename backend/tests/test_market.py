@@ -16,7 +16,6 @@ from app.domain import (
     ApprovalStatus,
     AwardConflict,
     CallPhase,
-    CallReport,
     Carrier,
     Money,
     Order,
@@ -352,43 +351,6 @@ async def test_a_second_ranking_supersedes_the_first_award_request() -> None:
         a for a in await store.open_approvals("order-1") if a.kind is ApprovalKind.AWARD_APPROVAL
     ]
     assert [a.id for a in open_awards] == [second.id]
-
-
-async def test_renegotiation_context_uses_the_first_call_report_as_guidance() -> None:
-    store, market = seeded()
-    quote_id = await store.add_quote(quote("carrier-1", 850_000))
-    await store.save_report(
-        CallReport(
-            call_id="call-carrier-1",
-            summary="Quoted 8,500 USD but objected to the pickup hour.",
-            objections=["Pickup is too early"],
-            conditions=["Subject to chassis availability"],
-        )
-    )
-    comparison = await market.rank(order())
-
-    plans = await market.plan_renegotiation(order(), comparison)
-
-    assert len(plans) == 1
-    assert plans[0].context["phase"] == CallPhase.RENEGOTIATION.value
-    assert "Pickup is too early" in str(plans[0].context["agreed_terms"])
-    assert quote_id in {entry.quote_id for entry in comparison.entries}
-
-
-async def test_renegotiation_calls_every_first_round_carrier_even_without_a_quote() -> None:
-    store, market = seeded()
-    await market.plan_rfq(order(), 0)
-    await store.add_quote(quote("carrier-1", 850_000))
-
-    plans = await market.plan_renegotiation(order(), await market.rank(order()))
-
-    assert {plan.carrier.id for plan in plans} == {"carrier-1", "carrier-2", "carrier-3"}
-    missing_quote_contexts = [
-        str(plan.context["agreed_terms"])
-        for plan in plans
-        if plan.carrier.id in {"carrier-2", "carrier-3"}
-    ]
-    assert all("No complete quotation was recorded" in text for text in missing_quote_contexts)
 
 
 async def test_an_award_needs_an_approved_approval() -> None:

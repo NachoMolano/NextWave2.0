@@ -151,126 +151,6 @@ class Market:
         await self._store.set_order_status(order.id, OrderStatus.QUOTING)
         return plans
 
-    async def plan_renegotiation(self, order: Order, comparison: Comparison) -> list[DialPlan]:
-        """Call each carrier that supplied a quote for one bounded improvement round.
-
-        Post-call reports are derived from the stored transcripts and provide conversational
-        continuity only. The fresh proposal still has to pass through the normal typed tool
-        and deterministic policy path; a report can never authorize a term.
-        """
-        claimed = await self._store.append_event(
-            EventRow(
-                order_id=order.id,
-                type="renegotiation.planned",
-                payload={"mandate_version": order.mandate_version},
-                idempotency_key=f"renegotiation-planned:{order.id}:{order.mandate_version}",
-            )
-        )
-        if not claimed:
-            return []
-
-        quotes = {q.id: q for q in await self._store.quotes_for(order.id) if q.id}
-        plans: list[DialPlan] = []
-        seen_carriers: set[str] = set()
-        for entry in comparison.entries:
-            if entry.carrier_id in seen_carriers:
-                continue
-            quote = quotes.get(entry.quote_id)
-            carrier = await self._store.carrier(entry.carrier_id)
-            if quote is None or carrier is None or not carrier.phone:
-                continue
-            seen_carriers.add(entry.carrier_id)
-            report = await self._store.report_for(quote.call_id)
-            report_detail = ""
-            if report is not None:
-                details = [report.summary, *report.objections, *report.conditions]
-                report_detail = " Prior call evidence: " + "; ".join(x for x in details if x)
-            standing = (
-                f"Carrier quoted {quote.amount.spoken()}, pickup {quote.pickup_at.isoformat()}, "
-                f"equipment {quote.equipment}, valid until {quote.valid_until.isoformat()}."
-                f"{report_detail}"
-            )
-            context = self._context_for(order, carrier, len(comparison.entries), None).model_copy(
-                update={
-                    "phase": CallPhase.RENEGOTIATION,
-                    "agreed_terms": standing,
-                    "change_requested": (
-                        "Please offer your best improved complete all-in rate and restate every "
-                        "pickup, equipment, inclusion, exclusion, and validity term."
-                    ),
-                }
-            )
-            call_id = await self._store.upsert_call(
-                CallRecord(
-                    vapi_call_id=f"pending:renegotiation:{order.id}:{carrier.id}",
-                    direction=CallDirection.OUTBOUND,
-                    phase=CallPhase.RENEGOTIATION.value,
-                    order_id=order.id,
-                    carrier_id=carrier.id,
-                    to_number=carrier.phone,
-                    started_at=self._now(),
-                    context=context.model_dump(mode="json"),
-                )
-            )
-            plans.append(
-                DialPlan(
-                    call_id=call_id,
-                    carrier=carrier,
-                    to_number=carrier.phone,
-                    context=context.model_dump(mode="json"),
-                )
-            )
-
-        # Every carrier reached in the first round gets the same second opportunity, even
-        # when their first call produced no complete quote.  They have no standing terms to
-        # renegotiate, so the context says that plainly instead of inventing one.
-        try:
-            first_round = await cast(CallListingStore, self._store).calls_for(order.id)
-        except (AttributeError, NotImplementedError):
-            first_round = []
-        for call in first_round:
-            if call.phase != CallPhase.RFQ.value or not call.carrier_id:
-                continue
-            if call.carrier_id in seen_carriers:
-                continue
-            carrier = await self._store.carrier(call.carrier_id)
-            if carrier is None or not carrier.phone:
-                continue
-            seen_carriers.add(carrier.id)
-            report = await self._store.report_for(call.id) if call.id else None
-            report_detail = f" Prior call evidence: {report.summary}" if report else ""
-            context = self._context_for(order, carrier, len(comparison.entries), None).model_copy(
-                update={
-                    "phase": CallPhase.RENEGOTIATION,
-                    "agreed_terms": f"No complete quotation was recorded.{report_detail}",
-                    "change_requested": (
-                        "Please provide your best complete all-in rate and every pickup, "
-                        "equipment, inclusion, exclusion, and validity term."
-                    ),
-                }
-            )
-            call_id = await self._store.upsert_call(
-                CallRecord(
-                    vapi_call_id=f"pending:renegotiation:{order.id}:{carrier.id}",
-                    direction=CallDirection.OUTBOUND,
-                    phase=CallPhase.RENEGOTIATION.value,
-                    order_id=order.id,
-                    carrier_id=carrier.id,
-                    to_number=carrier.phone,
-                    started_at=self._now(),
-                    context=context.model_dump(mode="json"),
-                )
-            )
-            plans.append(
-                DialPlan(
-                    call_id=call_id,
-                    carrier=carrier,
-                    to_number=carrier.phone,
-                    context=context.model_dump(mode="json"),
-                )
-            )
-        return plans
-
     def _context_for(
         self, order: Order, carrier: Carrier, in_hand: int, best: Decimal | None
     ) -> CallContext:
@@ -448,6 +328,9 @@ class Market:
             components=tuple(components),
             cost_is_final=quote.cost_is_final,
             pickup_at=quote.pickup_at,
+            # Carried from the row, not re-derived. The ranking has to reach the same verdict
+            # the call did, and a quote judged as a day must not become a midnight on review.
+            pickup_is_date_only=quote.pickup_is_date_only,
             equipment=quote.equipment,
             valid_until=quote.valid_until,
             source_call_id=quote.call_id,

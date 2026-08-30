@@ -141,11 +141,21 @@ async def timeout_open_markets(
     settings: Settings,
     *,
     now: Callable[[], datetime],
-    placer: CallPlacer | None = None,
-    dial: Dialler | None = None,
     alert: AwardAlert | None = None,
 ) -> list[str]:
-    """Close RFQ, run one bounded renegotiation round, then request approval."""
+    """Close the RFQ round and hand the ranked comparison to a person.
+
+    One round. There was a renegotiation round here -- the market closed, every carrier who
+    had answered was dialled a second time for one improvement pass, and only then did a
+    human see anything. It cost each carrier a second call seconds after the first, and it
+    moved the decision further away rather than closer: the comparison a person finally
+    approved had been ranked before those second calls landed, so a better rate could arrive
+    and never reach the screen.
+
+    The improvement pass belongs inside the one call, where the agent already negotiates.
+    What follows a closed market is a person choosing, and then one call to the carrier they
+    chose.
+    """
     moment = now()
     cutoff = moment - timedelta(minutes=settings.rfq_timeout_minutes)
     market = Market(store, now=now)
@@ -154,35 +164,20 @@ async def timeout_open_markets(
     for order in await store.orders_in_status(OrderStatus.QUOTING):
         calls = await _calls_for(store, order.id)
         rfq_calls = [call for call in calls if call.phase == CallPhase.RFQ.value]
-        renegotiation_calls = [
-            call for call in calls if call.phase == CallPhase.RENEGOTIATION.value
-        ]
-        phase = CallPhase.RENEGOTIATION if renegotiation_calls else CallPhase.RFQ
-        phase_calls = renegotiation_calls or rfq_calls
-        if not _calls_are_closed(phase_calls, cutoff):
+        if not _calls_are_closed(rfq_calls, cutoff):
             continue
         accepted = await store.append_event(
             EventRow(
                 order_id=order.id,
-                type=f"{phase.value}.closed",
-                payload={"cutoff": cutoff.isoformat(), "call_count": len(phase_calls)},
-                idempotency_key=f"{phase.value}-closed:{order.id}:{order.mandate_version}",
+                type=f"{CallPhase.RFQ.value}.closed",
+                payload={"cutoff": cutoff.isoformat(), "call_count": len(rfq_calls)},
+                idempotency_key=f"{CallPhase.RFQ.value}-closed:{order.id}:{order.mandate_version}",
             )
         )
         if not accepted:
             continue
-        await _close_stalled_calls(store, phase_calls, moment)
+        await _close_stalled_calls(store, rfq_calls, moment)
         comparison = await market.rank(order)
-        if phase is CallPhase.RFQ:
-            plans = await market.plan_renegotiation(order, comparison)
-            if plans and placer is not None:
-                if dial is None:
-                    await run_campaign(
-                        plans, placer, settings, profile=profile_from_settings(settings)
-                    )
-                else:
-                    await dial(plans, placer, settings)
-                continue
         approval = await market.request_award_approval(order, comparison)
         if alert is not None:
             await alert(comparison, approval)
@@ -263,9 +258,7 @@ async def run_forever(
         await asyncio.sleep(settings.sweep_interval_seconds)
         try:
             dialled = await sweep_deadlines(store, placer, settings, now=now, dial=dial)
-            ranked = await timeout_open_markets(
-                store, settings, now=now, placer=placer, dial=dial, alert=alert
-            )
+            ranked = await timeout_open_markets(store, settings, now=now, alert=alert)
             if dialled or ranked:
                 log.info("jobs.tick", dialled=len(dialled), ranked=len(ranked))
         except asyncio.CancelledError:
