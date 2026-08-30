@@ -18,6 +18,7 @@ random reference and cleaned up in foreign-key order where the grants allow it.
 OWNER: Track C.
 """
 
+import contextlib
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -46,13 +47,16 @@ from app.domain import (
     QuoteRow,
     QuoteStatus,
     Store,
+    Turn,
 )
 from app.store import RowNotFound, SupabaseStore
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 
-_LIVE = os.environ.get("VOLTA_LIVE_STORE_TESTS") == "1" and bool(os.environ.get("SUPABASE_URL"))
+# Settings, not os.environ: SUPABASE_URL normally lives in backend/.env, which
+# pydantic-settings reads and the process environment never sees.
+_LIVE = os.environ.get("VOLTA_LIVE_STORE_TESTS") == "1" and bool(Settings().supabase_url)
 _LIVE_REASON = (
     "live store tests are opt-in: set VOLTA_LIVE_STORE_TESTS=1 with SUPABASE_URL and "
     "SUPABASE_SECRET_KEY. They write to the configured project, and decisions/events are "
@@ -174,6 +178,12 @@ async def _build_live_world() -> AsyncIterator[World]:
         # Foreign-key order, and only what the grants allow. decisions and events stay:
         # revoking DELETE is the point of them, so a test cannot tidy away its own audit
         # trail any more than the backend can.
+        #
+        # A consequence worth naming rather than working around: once any event references an
+        # order, that order can never be deleted either. events.order_id is ON DELETE RESTRICT
+        # and events has no DELETE grant, so the ledger outlives the operational row by
+        # construction. Cleanup is best-effort for that reason -- a 23503 here is the schema
+        # keeping its promise, not a failure.
         db = store._db
         for table, column, value in (
             ("commitments", "order_id", order_id),
@@ -186,7 +196,9 @@ async def _build_live_world() -> AsyncIterator[World]:
             ("carriers", "id", one_id),
             ("carriers", "id", two_id),
         ):
-            await db.table(table).delete().eq(column, value).execute()
+            with contextlib.suppress(Exception):
+                await db.table(table).delete().eq(column, value).execute()
+        await store.aclose()
 
 
 @pytest.fixture(
@@ -355,7 +367,9 @@ async def test_a_redelivered_status_update_does_not_erase_the_transcript(
             update={
                 "status": CallStatus.ENDED,
                 "recording_url": "https://recording.test/1.wav",
-                "transcript": [{"speaker": "caller", "text": "Sí, tengo un minuto."}],
+                "transcript": [
+                    Turn(speaker="caller", text="Sí, tengo un minuto.", offset_ms=11_455)
+                ],
             }
         )
     )

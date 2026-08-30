@@ -29,7 +29,9 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any, cast
 
+import httpx
 from supabase import AsyncClient
+from supabase.lib.client_options import AsyncClientOptions
 
 from app.config import Settings
 from app.domain import (
@@ -69,6 +71,37 @@ _CONFLICTS: dict[str, type[Exception]] = {
     "quotes_one_award_per_order": AwardConflict,
     "commitments_one_live_per_order": AwardConflict,
 }
+
+
+#: PostgREST's own default is 120 seconds, which is less a timeout than the absence of one.
+#: vapi/webhook.py has a hard, non-configurable 7.5-second budget for a single
+#: carrier_by_phone lookup before Vapi abandons the assistant-request, so a store call still
+#: waiting at ten seconds has already lost the call it was serving. Better it fails and lets
+#: the caller fall back to the unverified-caller assistant than hold the connection open.
+#:
+#: Supplying our own httpx client is also what stops supabase handing `timeout` down to
+#: postgrest, where it is deprecated and warns -- and `filterwarnings = ["error"]` in
+#: pyproject.toml makes that warning a test failure. Both reasons point the same way, which is
+#: why this is configured explicitly rather than left alone.
+_STORE_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+
+
+def _client_options() -> AsyncClientOptions:
+    return AsyncClientOptions(httpx_client=httpx.AsyncClient(timeout=_STORE_TIMEOUT))
+
+
+def _turns(transcript: object) -> list[dict[str, Any]]:
+    """Serialise a transcript that may not have been validated on its way in.
+
+    ``model_copy(update=...)`` skips validation and is the normal way records are amended
+    across this codebase, so a list of Turns can legitimately arrive holding plain dicts.
+    Accepting both costs a line; raising AttributeError deep inside a webhook handler costs a
+    call.
+    """
+    turns: list[dict[str, Any]] = []
+    for turn in cast(list[Any], transcript):
+        turns.append(turn.model_dump(mode="json") if hasattr(turn, "model_dump") else dict(turn))
+    return turns
 
 
 def _constraint_of(message: str) -> str:
@@ -226,7 +259,7 @@ def _call_row(call: CallRecord) -> dict[str, Any]:
         "ended_at": _iso(call.ended_at),
         "ended_reason": call.ended_reason,
         "recording_url": call.recording_url,
-        "transcript": [t.model_dump(mode="json") for t in call.transcript],
+        "transcript": _turns(call.transcript),
         "context": call.context,
         "identity_verified": call.identity_verified,
         "identity_level": call.identity_level,
@@ -274,6 +307,17 @@ class SupabaseStore:
 
     # --- the client ---------------------------------------------------------------
 
+    async def aclose(self) -> None:
+        """Release the HTTP connection pool.
+
+        Optional in a server that outlives its store, required in a test that builds one per
+        case and would otherwise leak sockets past the end of the run.
+        """
+        client = self._client
+        self._client = None
+        if client is not None:
+            await client.postgrest.aclose()
+
     @property
     def _db(self) -> AsyncClient:
         """Build on first use. A missing configuration is a 503, never a failed boot."""
@@ -284,7 +328,7 @@ class SupabaseStore:
                     "the store cannot be reached"
                 )
             try:
-                self._client = AsyncClient(self._url, self._key)
+                self._client = AsyncClient(self._url, self._key, options=_client_options())
             except Exception as exc:
                 raise StoreUnavailable(f"could not build a Supabase client: {exc}") from exc
         return self._client
@@ -424,7 +468,12 @@ class SupabaseStore:
         return _to_commitment(row) if row else None
 
     async def commitment(self, commitment_id: str) -> Commitment | None:
-        raise NotImplementedError(_UNIMPLEMENTED)
+        with _translate():
+            res = (
+                await self._db.table("commitments").select("*").eq("id", commitment_id).execute()
+            )
+        row = _one(res)
+        return _to_commitment(row) if row else None
 
     async def due_for_chase(self, now: datetime) -> list[Order]:
         underway = [str(s) for s in DELIVERY_UNDERWAY]
@@ -438,10 +487,13 @@ class SupabaseStore:
             )
         return [_to_order(r) for r in _rows(res)]
 
-    # --- writes -------------------------------------------------------------------
-
     async def orders_in_status(self, status: OrderStatus) -> list[Order]:
-        raise NotImplementedError(_UNIMPLEMENTED)
+        """Every order sitting in one state. The RFQ timeout sweep asks for `quoting`."""
+        with _translate():
+            res = await self._db.table("orders").select("*").eq("status", str(status)).execute()
+        return [_to_order(r) for r in _rows(res)]
+
+    # --- writes -------------------------------------------------------------------
 
     async def upsert_call(self, call: CallRecord) -> str:
         """Create or update by ``vapi_call_id``, without letting a late webhook erase evidence.
