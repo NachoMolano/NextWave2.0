@@ -1,15 +1,21 @@
 {
-  "_status": "PROVISIONAL - written from docs.vapi.ai/tools/custom-tools, not captured",
+  "_status": "PARTIAL - the flat shape, written from docs.vapi.ai and never captured. Vapi actually sent the nested {'type':'function','function':{'name','arguments'}} form with arguments as a JSON string on call 01a0522a-9413-7000-9840-2ea58ebd6475 (2026-08-30), which this file does not show and which the tool server rejected for weeks. The captured shape is in tests/test_toolserver.py::_nested_propose_quote_call. Both are accepted; neither is the whole truth until one is captured from a webhook body.",
   "message": {
     "type": "tool-calls",
-    "call": { "id": "vapi-call-provisional-1" },
+    "call": {
+      "id": "vapi-call-provisional-1"
+    },
     "toolCallList": [
       {
         "id": "toolu_01DTPAzUm5Gk3zxrpJ969oMF",
         "name": "propose_quote",
         "arguments": {
           "components": [
-            { "name": "linehaul", "amount": "8500", "currency": "USD" }
+            {
+              "name": "linehaul",
+              "amount": "8500",
+              "currency": "USD"
+            }
           ],
           "cost_is_final": true,
           "pickup_date": "2026-09-03",
