@@ -34,6 +34,7 @@ type Route =
   | { name: 'approvals' }
   | { name: 'carriers' }
   | { name: 'profile' }
+  | { name: 'debug' }
 
 function parseRoute(): Route {
   const path = window.location.hash.replace(/^#/, '') || '/'
@@ -45,6 +46,7 @@ function parseRoute(): Route {
   if (parts[0] === 'approvals') return { name: 'approvals' }
   if (parts[0] === 'carriers') return { name: 'carriers' }
   if (parts[0] === 'profile') return { name: 'profile' }
+  if (parts[0] === 'debug' || parts[0] === 'email-test') return { name: 'debug' }
   return { name: 'orders' }
 }
 
@@ -162,6 +164,11 @@ export default function App() {
             label="Business"
             onClick={() => navigate('/profile')}
           />
+          <NavItem
+            active={route.name === 'debug'}
+            label="Debug"
+            onClick={() => navigate('/debug')}
+          />
         </nav>
         <div className="sidebar-footer">
           <span className="source-dot" />
@@ -199,7 +206,75 @@ export default function App() {
         {route.name === 'approvals' && <ApprovalsPage onOpen={(id) => navigate(`/orders/${id}`)} />}
         {route.name === 'carriers' && <CarriersPage />}
         {route.name === 'profile' && <ProfilePage />}
+        {route.name === 'debug' && <DebugPage />}
       </div>
+    </div>
+  )
+}
+
+function DebugPage() {
+  const [toAddress, setToAddress] = useState('imolano578@gmail.com')
+  const [subject, setSubject] = useState('Hello World')
+  const [body, setBody] = useState('Congrats on sending your first email!')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function send() {
+    setBusy(true)
+    setResult(null)
+    setError(null)
+    try {
+      const delivery = await voltaApi.sendEmailTest({
+        to_address: toAddress,
+        subject,
+        body,
+      })
+      if (delivery.status === 'sent') {
+        setResult(`Sent · ${delivery.provider_message_id ?? 'provider accepted'}`)
+      } else {
+        setError(`${delivery.status}: ${delivery.error ?? 'provider did not confirm delivery'}`)
+      }
+    } catch (caught) {
+      setError((caught as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="page">
+      <div className="page-heading">
+        <p className="eyebrow">Local diagnostics</p>
+        <h1>Debug tools</h1>
+        <p>These isolated controls are available only when the backend runs in local mode.</p>
+      </div>
+      <section className="surface profile-wide">
+        <div>
+          <p className="eyebrow">Resend</p>
+          <h2>Arbitrary email composer</h2>
+          <p>This message is manual and never changes an order, quote, approval or commitment.</p>
+        </div>
+        <label>
+          <span className="eyebrow">To</span>
+          <input className="field" value={toAddress} onChange={(e) => setToAddress(e.target.value)} />
+        </label>
+        <label>
+          <span className="eyebrow">Subject</span>
+          <input className="field" value={subject} onChange={(e) => setSubject(e.target.value)} />
+        </label>
+        <label>
+          <span className="eyebrow">Message</span>
+          <textarea className="field email-test-body" value={body} onChange={(e) => setBody(e.target.value)} />
+        </label>
+        <div className="dialog-actions">
+          <button className="primary-button" disabled={busy || !toAddress || !subject || !body} onClick={send}>
+            {busy ? 'Sending…' : 'Send test email'}
+          </button>
+        </div>
+        {result && <p className="command-notice">✓ {result}</p>}
+        {error && <p className="command-notice command-denied">! {error}</p>}
+      </section>
     </div>
   )
 }

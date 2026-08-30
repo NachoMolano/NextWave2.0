@@ -12,6 +12,8 @@ import type {
   SetMandateRequest,
   SweepResult,
   TraceRow,
+  DeliveryResult,
+  EmailTestRequest,
 } from './types'
 
 /**
@@ -112,6 +114,9 @@ export const voltaApi = {
   /** `updated_by` is required: the warehouse address is read out loud on a recorded line. */
   updateProfile: (body: BusinessProfileUpdate): Promise<BusinessProfile> =>
     request('/api/profile', { method: 'PUT', body: JSON.stringify(body) }),
+
+  sendEmailTest: (body: EmailTestRequest): Promise<DeliveryResult> =>
+    request('/api/email-test', { method: 'POST', body: JSON.stringify(body) }),
 
   /** The demo button. A second press dials nothing, which is the assertion worth showing. */
   runSweep: (): Promise<SweepResult> => request('/api/jobs/sweep', { method: 'POST' }),

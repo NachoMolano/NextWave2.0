@@ -15,7 +15,7 @@ OWNER: Track E.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import cast
@@ -27,8 +27,22 @@ from app import jobs
 from app.agent.report import OpenAIReportModel
 from app.api import PortalStore, create_api_router
 from app.config import Settings, get_settings
-from app.domain import Approval, CallPlacer, Comparison, DialPlan, Notifier, Store
-from app.notify.render import render_award_request
+from app.domain import (
+    Approval,
+    ApprovalKind,
+    ApprovalReason,
+    CallPhase,
+    CallPlacer,
+    CallRecord,
+    CallReport,
+    CommitmentState,
+    Comparison,
+    DialPlan,
+    EventRow,
+    Notifier,
+    Store,
+)
+from app.notify.render import render_award_request, render_commitment_email, render_incident_report
 from app.notify.sender import NullNotifier, ResendTwilioNotifier
 from app.store.supabase import SupabaseStore
 from app.tools.calls import CallLedger
@@ -41,7 +55,7 @@ from app.vapi.client import VapiCallPlacer
 from app.vapi.toolserver import create_tool_router
 from app.vapi.webhook import create_webhook_router
 
-__all__ = ["build_store", "create_app", "now_utc"]
+__all__ = ["build_after_report", "build_store", "create_app", "now_utc"]
 
 log = structlog.get_logger(__name__)
 
@@ -93,6 +107,77 @@ def build_tools(
         ledger=ledger,
         commitments=commitments,
     )
+
+
+def build_after_report(
+    store: Store,
+    notifier: Notifier,
+    commitments: CommitmentCoordinator,
+    settings: Settings,
+    *,
+    now: Callable[[], datetime],
+) -> Callable[[CallRecord, CallReport], Awaitable[None]]:
+    """Compose post-call notifications without granting the report any authority."""
+
+    async def raise_notification_escalation(call: CallRecord, detail: str) -> None:
+        await store.raise_approval(
+            Approval(
+                order_id=call.order_id,
+                call_id=call.id,
+                kind=ApprovalKind.ESCALATION,
+                reason=ApprovalReason.POLICY_FAILURE,
+                context={"detail": detail},
+                raised_at=now(),
+            )
+        )
+
+    async def after_report(call: CallRecord, report: CallReport) -> None:
+        if call.phase == CallPhase.AWARD.value and call.order_id:
+            commitment = await store.live_commitment(call.order_id)
+            if (
+                commitment is None
+                or commitment.id is None
+                or commitment.state is not CommitmentState.VERBAL
+                or commitment.evidence_call_id != call.id
+            ):
+                return
+            carrier = await store.carrier(call.carrier_id) if call.carrier_id else None
+            if carrier is None or not carrier.email:
+                await raise_notification_escalation(
+                    call, "the awarded carrier has no email; the written recap was not sent"
+                )
+                return
+            message = render_commitment_email(
+                commitment, report, carrier.email, call.recording_url
+            )
+            await commitments.send_recap_and_promote(commitment.id, message)
+            return
+
+        if call.phase not in {CallPhase.INBOUND.value, CallPhase.STATUS_CHECK.value}:
+            return
+        for address, whatsapp in (
+            (settings.manager_email.strip(), False),
+            (settings.manager_whatsapp.strip(), True),
+        ):
+            if not address:
+                continue
+            channel = "whatsapp" if whatsapp else "email"
+            claimed = await store.append_event(
+                EventRow(
+                    order_id=call.order_id,
+                    call_id=call.id,
+                    type="incident.notification_claimed",
+                    payload={"channel": channel},
+                    idempotency_key=f"incident-notification:{call.id}:{channel}",
+                )
+            )
+            if not claimed:
+                continue
+            message = render_incident_report(report, address, whatsapp=whatsapp)
+            result = await notifier.send(message)
+            await store.record_delivery(message, result)
+
+    return after_report
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -156,6 +241,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await notifier.send(message)
         await store.record_delivery(message, result)
 
+    after_report = build_after_report(store, notifier, commitments, settings, now=now_utc)
+
     # Built here so the same capability instances are injected into every router. In
     # particular, webhook lifecycle events and model tools share one CallLedger.
     app_state = {
@@ -205,6 +292,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             escalation_number=settings.escalation_phone_number,
             server_secret=settings.vapi_server_secret,
             now=now_utc,
+            after_report=after_report,
         ),
         prefix="/vapi",
     )
@@ -216,6 +304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             dial=dial_plans,
             now=now_utc,
             settings=settings,
+            notifier=notifier,
         ),
         prefix="/api",
     )

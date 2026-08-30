@@ -171,6 +171,7 @@ async def timeout_open_markets(
         )
         if not accepted:
             continue
+        await _close_stalled_calls(store, phase_calls, moment)
         comparison = await market.rank(order)
         if phase is CallPhase.RFQ:
             plans = await market.plan_renegotiation(order, comparison)
@@ -187,6 +188,28 @@ async def timeout_open_markets(
             await alert(comparison, approval)
         ranked.append(order.id)
     return ranked
+
+
+async def _close_stalled_calls(
+    store: Store, calls: list[CallRecord], moment: datetime
+) -> None:
+    """Mark calls that never reported an end as failed, once the market has closed.
+
+    A call can die before it ever starts -- Vapi ended one of the 30 Aug calls with
+    ``call.start.error-get-transport`` and sent no webhook at all, so its row sat at QUEUED
+    with no ``ended_at`` while the portal showed it beside two that had finished. The market
+    was never blocked (``_calls_are_closed`` falls back to the cutoff for exactly this), but
+    a queued row that will never move is a lie on the screen.
+
+    Here rather than in a sweep of its own because this is the moment we have already
+    decided those calls are over. Writing FAILED at any earlier point would be a guess.
+    """
+    for call in calls:
+        if call.status in (CallStatus.ENDED, CallStatus.FAILED):
+            continue
+        await store.upsert_call(
+            call.model_copy(update={"status": CallStatus.FAILED, "ended_at": moment})
+        )
 
 
 async def _market_is_closed(store: Store, order: Order, cutoff: datetime) -> bool:

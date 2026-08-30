@@ -39,7 +39,9 @@ from app.api.schemas import (
     BusinessProfile,
     BusinessProfileUpdate,
     CallDetail,
+    ConfirmIntakeRequest,
     DemurrageView,
+    EmailTestRequest,
     MandateView,
     NewOrderRequest,
     OrderAggregate,
@@ -57,10 +59,14 @@ from app.domain import (
     Carrier,
     Commitment,
     DecisionRow,
+    DeliveryResult,
     DialPlan,
     EventRow,
     Money,
+    NotificationChannel,
+    Notifier,
     Order,
+    OutboundMessage,
     Store,
 )
 from app.store import AwardConflict, RowNotFound, StoreUnavailable
@@ -138,6 +144,7 @@ def create_api_router(
     dial: Dialler,
     now: Callable[[], datetime],
     settings: Settings,
+    notifier: Notifier | None = None,
 ) -> APIRouter:
     async def portal_actor() -> str:
         """The unauthenticated portal still records a stable audit actor."""
@@ -241,6 +248,49 @@ def create_api_router(
             approvals=approvals,
         )
 
+    @router.post("/orders/{order_id}/intake", response_model=OrderAggregate)
+    async def confirm_intake(
+        order_id: str,
+        body: ConfirmIntakeRequest,
+        actor: Annotated[str, Depends(portal_actor)],
+    ) -> OrderAggregate:
+        """Stage 1. Confirm the container is released, and close the gaps intake owns.
+
+        Separate from creating the order because they are different acts by different
+        parties: an order arrives from a document, and a person then checks it is real and
+        may move. Collapsing them is how three carriers came to be dialled for a container
+        nobody had confirmed was released, on a lane with no clock at all.
+
+        Releasing is reversible. ``released: false`` clears it, which is the stop switch when
+        something changes after the market is open -- the mandate and the dialler both read
+        the same flag.
+        """
+        order = await _load(order_id)
+        gaps = body.model_dump(exclude_none=True, exclude={"released", "note"})
+        updated = order.model_copy(
+            update={
+                **gaps,
+                "released_at": now() if body.released else None,
+                "released_by": actor if body.released else None,
+                "release_note": body.note,
+            }
+        )
+        with _guard():
+            await store.save_order(updated)
+            await store.append_event(
+                EventRow(
+                    order_id=order.id,
+                    type="intake.released" if body.released else "intake.held",
+                    payload={"by": actor, "note": body.note or ""},
+                    # Keyed on the decision, not the moment: confirming twice is one fact,
+                    # and a hold after a release is a different one.
+                    idempotency_key=(
+                        f"intake:{order.id}:{'released' if body.released else 'held'}"
+                    ),
+                )
+            )
+        return await get_order(order_id)
+
     @router.post("/orders/{order_id}/mandate", response_model=OrderAggregate)
     async def set_mandate(
         order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(portal_actor)]
@@ -258,6 +308,26 @@ def create_api_router(
         progress label.
         """
         order = await _load(order_id)
+        if not order.is_released:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This container has not been confirmed as released. Confirm intake "
+                    "before granting authority to spend against it."
+                ),
+            )
+        if not order.has_clock and body.delivery_deadline is None:
+            # The complaint that produced this check: a mandate was granted, and three
+            # carriers dialled, on a lane with neither a last free day nor a cutoff. A
+            # ceiling with no clock is an authority to negotiate with no reason to hurry.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This operation has no deadline: set a last free day (import demurrage) "
+                    "or a cargo cutoff before granting a mandate. Free time is what makes "
+                    "the pickup window worth negotiating."
+                ),
+            )
         if order.mandate_version != body.expected_version:
             raise HTTPException(
                 status_code=409,
@@ -306,6 +376,16 @@ def create_api_router(
     async def start_rfq(order_id: str) -> OrderAggregate:
         """Open the market. Refuses without a mandate: nothing is authorized yet."""
         order = await _load(order_id)
+        if not order.is_released:
+            # Defence in depth: the mandate gate above already refuses, but a release can be
+            # withdrawn after one was granted and the phone must stop when it is.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"order {order.reference} is not released: nothing may be dialled for a "
+                    "container that has not been confirmed as available to move"
+                ),
+            )
         if not order.has_mandate:
             raise HTTPException(
                 status_code=409,
@@ -317,7 +397,21 @@ def create_api_router(
             # claimed, so a second click -- or a second instance pointed at the same database
             # -- reaches this line with an empty list and dials nobody.
             if plans:
-                await dial(plans)
+                placed = await dial(plans)
+                # run_campaign swallows each dial failure so one bad carrier cannot take the
+                # batch down, which meant a round that reached *nobody* returned 200 and the
+                # portal said "collecting quotes" over three rows that would never ring. A
+                # total failure is not a market: say so, and release it for a real retry.
+                if not placed:
+                    await market.mark_dial_round_failed(plans)
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Nobody was dialled: the telephony provider refused every call. "
+                            "Nothing was recorded and the market is still open, so this can "
+                            "be retried once the provider is reachable."
+                        ),
+                    )
         return await get_order(order_id)
 
     @router.get("/orders/{order_id}/comparison")
@@ -354,11 +448,29 @@ def create_api_router(
                 status_code=409, detail=f"approval {approval_id} is already {approval.status}"
             )
 
+        # An award approval that names no winner cannot be approved: market.award raises
+        # ValueError("the approval carries no winning quote"), which _guard turns into a 500
+        # the portal shows as nothing happening at all. Refusing it here says why, and the
+        # refusal is the truth -- an award with no candidate is a question for the market,
+        # not a decision a person can make.
+        if (
+            body.status == "approved"
+            and str(approval.kind) == "award_approval"
+            and not approval.context.get("winner_quote_id")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This comparison has no eligible carrier, so there is nothing to award. "
+                    "Quote the market again, or raise the ceiling if every quote was over it."
+                ),
+            )
+
         with _guard():
             if body.status == "approved" and approval.order_id:
                 order = await store.order(approval.order_id)
                 if order is not None and str(approval.kind) == "award_approval":
-                    await market.award(
+                    quote_id = await market.award(
                         order,
                         approval.model_copy(
                             update={
@@ -368,6 +480,19 @@ def create_api_router(
                             }
                         ),
                     )
+                    plans = await market.plan_award(order, quote_id)
+                    if plans:
+                        placed = await dial(plans)
+                        if not placed:
+                            await market.mark_dial_round_failed(plans)
+                            raise HTTPException(
+                                status_code=502,
+                                detail=(
+                                    "The winning carrier was not called: the telephony "
+                                    "provider refused the confirmation call. The approval "
+                                    "remains open and can be retried safely."
+                                ),
+                            )
             await store.resolve_approval(
                 approval_id,
                 status=body.status,
@@ -385,7 +510,22 @@ def create_api_router(
     async def list_calls(order_id: str = Query(...)) -> list[CallDetail]:
         with _guard():
             calls = await store.calls_for(order_id)
-            return [CallDetail(call=c, report=None, carrier=None) for c in calls]
+            # The carrier was hardcoded None here, so the list could only ever say
+            # "rfq · outbound" over a phone number -- the one column that tells an operator
+            # who is on the other end. Fetched once per distinct carrier rather than per
+            # call: three calls to the same carrier is one lookup.
+            carriers: dict[str, Carrier | None] = {}
+            for record in calls:
+                if record.carrier_id and record.carrier_id not in carriers:
+                    carriers[record.carrier_id] = await store.carrier(record.carrier_id)
+            return [
+                CallDetail(
+                    call=c,
+                    report=None,
+                    carrier=carriers.get(c.carrier_id) if c.carrier_id else None,
+                )
+                for c in calls
+            ]
 
     @router.get("/calls/{call_id}", response_model=CallDetail)
     async def get_call(call_id: str) -> CallDetail:
@@ -467,6 +607,25 @@ def create_api_router(
         with _guard():
             row = await store.save_company_profile(values)
         return BusinessProfile.model_validate(row)
+
+    # ---------------------------------------------------------------------- email test
+
+    @router.post("/email-test", response_model=DeliveryResult)
+    async def send_email_test(body: EmailTestRequest) -> DeliveryResult:
+        """Local smoke test only; never an unauthenticated production mail relay."""
+        if settings.environment != "local":
+            raise HTTPException(status_code=404, detail="email test is available only locally")
+        if notifier is None:
+            raise HTTPException(status_code=503, detail="email notifier is not configured")
+        if "@" not in body.to_address or body.to_address.startswith("@"):
+            raise HTTPException(status_code=422, detail="enter a valid recipient email address")
+        message = OutboundMessage(
+            channel=NotificationChannel.EMAIL,
+            to_address=body.to_address,
+            subject=body.subject,
+            body=body.body,
+        )
+        return await notifier.send(message)
 
     # -------------------------------------------------------------------------- jobs
 

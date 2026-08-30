@@ -783,3 +783,27 @@ async def test_two_matched_facts_unlock_the_order() -> None:
     assert "OP-1042" in detail
     call = await world.store.call(call_id)
     assert call is not None and call.identity_verified is True
+
+
+async def test_a_quote_with_no_stated_validity_is_not_born_stale() -> None:
+    """A carrier who does not name a validity has still given you a rate.
+
+    ``valid_until`` defaulted to ``now()``, and the row is written a fraction of a second
+    later -- so the quote was already expired when policy read it. STALE_EVIDENCE is checked
+    before the ceiling, before the window and before FX, so *every* such quote came back
+    ineligible. Two real quotes on OP-MZO-0003 produced "no eligible candidate" with a
+    validity span of minus 0.19 seconds, and nothing could ever have been awarded.
+    """
+    world = World()
+    call_id = await world.call("vapi-1")
+
+    result = await world.tools.propose_quote(
+        call_id,
+        # The carrier said nothing about how long it holds.
+        quote_args("8500", valid_until=None),
+    )
+
+    assert result == RESPONSES["quote_recorded"]
+    quote = next(iter(world.store.quotes.values()))
+    assert quote.valid_until > NOW, "a quote must not expire before the row that holds it"
+    assert (PolicyOutcome.ALLOW.value, ReasonCode.ALLOWED.value) in await decisions_for(world)

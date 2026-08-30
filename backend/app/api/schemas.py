@@ -36,6 +36,7 @@ __all__ = [
     "BusinessProfile",
     "BusinessProfileUpdate",
     "CallDetail",
+    "ConfirmIntakeRequest",
     "DemurrageView",
     "MandateView",
     "NewOrderRequest",
@@ -68,6 +69,33 @@ class NewOrderRequest(BaseModel):
     expected_driver: str | None = None
     expected_plate: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfirmIntakeRequest(BaseModel):
+    """Stage 1. A person confirms the container is real, released and ready to move.
+
+    Everything except the confirmation itself is a gap-filler: intake is where the facts a
+    person holds and the system never saw get written down. They are optional because a
+    complete intake does not need them; the *gate* is ``released``, and the clock is checked
+    when the mandate is granted rather than here, so an operator can record a release the
+    moment they have it and come back with the cutoff.
+    """
+
+    released: bool = Field(
+        description="True confirms the container may move. False records a hold and clears "
+        "the release, which is what stops the market if something changed."
+    )
+    note: str | None = Field(
+        default=None, max_length=500, description="Why it is held, or what was checked."
+    )
+    # The gaps intake exists to close.
+    discharged_at: datetime | None = None
+    free_days: int | None = Field(default=None, ge=0)
+    last_free_day: date | None = None
+    delivery_deadline: datetime | None = None
+    weight: str | None = None
+    container_number: str | None = None
+    equipment: str | None = None
 
 
 class SetMandateRequest(BaseModel):
@@ -322,3 +350,11 @@ class Session(BaseModel):
     rfq_carrier_count: int = Field(
         ge=1, description="Carriers dialled when the market opens, from server settings."
     )
+
+
+class EmailTestRequest(BaseModel):
+    """One local-only, user-authored Resend smoke test."""
+
+    to_address: str = Field(min_length=3, max_length=320)
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=20_000)
