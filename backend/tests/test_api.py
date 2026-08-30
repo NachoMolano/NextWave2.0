@@ -40,15 +40,7 @@ from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
-
-#: The identity the configured token stands for. Every action is recorded against it.
 PORTAL_ACTOR = "ops@volta.test"
-
-#: Long enough not to trip the weak-token warning the app logs at startup.
-MARIA_TOKEN = "tok-maria-aaaaaaaaaaaaaaaaaa"
-DIEGO_TOKEN = "tok-diego-bbbbbbbbbbbbbbbbbb"
-SHARED_TOKEN = "tok-shared-cccccccccccccccccc"
-AUTH = {"Authorization": "Bearer portal-test-token"}
 
 
 def _now() -> datetime:
@@ -199,14 +191,11 @@ def build(
             sweep=sweep,
             dial=dial,
             now=_now,
-            settings=Settings(
-                portal_api_token="portal-test-token",
-                portal_manager_identity="ops@volta.test",
-            ),
+            settings=Settings(portal_manager_identity="ops@volta.test"),
         ),
         prefix="/api",
     )
-    return TestClient(app, headers=AUTH), store, market, sweep, dial
+    return TestClient(app), store, market, sweep, dial
 
 
 def _new_order(reference: str = "OP-MZO-0001") -> dict[str, object]:
@@ -557,9 +546,9 @@ def test_unimplemented_renegotiation_is_not_advertised() -> None:
     assert response.status_code == 404
 
 
-def test_portal_requires_a_bearer_token() -> None:
+def test_portal_accepts_requests_without_a_bearer_token() -> None:
     client, _, _, _, _ = build()
-    assert client.get("/api/orders", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/api/orders", headers={"Authorization": "Bearer wrong"}).status_code == 200
 
 
 def test_an_unconfigured_store_is_503_not_a_crash() -> None:
@@ -694,16 +683,15 @@ def test_editing_the_profile_records_who_did_it() -> None:
     ).json()
 
     assert body["warehouse_address"] == "900 Channelside Dr"
-    # From the credential, never from the body. A name typed into a form authenticates
-    # nothing, and this is the row somebody reads when they ask who changed the address the
-    # agent now reads out on a recorded line.
+    # From server configuration, never from the body. This is the row somebody reads when
+    # they ask who changed the address the agent now reads out on a recorded line.
     assert body["updated_by"] == PORTAL_ACTOR
     assert store.profile is not None
     assert store.profile["warehouse_address"] == "900 Channelside Dr"
 
 
 def test_a_body_cannot_claim_to_be_somebody_else() -> None:
-    """An `updated_by` in the body is ignored; the credential decides who acted."""
+    """An `updated_by` in the body is ignored; server configuration decides who acted."""
     client, _, _, _, _ = build()
 
     body = client.put(
@@ -818,60 +806,14 @@ def _app_with(settings: Settings) -> TestClient:
     return TestClient(app)
 
 
-def test_per_person_tokens_each_act_as_themselves() -> None:
-    """The point of the whole exercise.
+def test_portal_never_requires_a_bearer_token() -> None:
+    client = _app_with(Settings())
 
-    With one shared token, "maria approved this" means "somebody holding the shared token
-    approved this" -- a human-looking name claiming more accountability than the system can
-    back. One token per person makes the same row true.
-    """
-    client = _app_with(
-        Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx,{DIEGO_TOKEN}:diego@volta.mx")
-    )
-
-    maria = client.get("/api/session", headers={"Authorization": f"Bearer {MARIA_TOKEN}"})
-    diego = client.get("/api/session", headers={"Authorization": f"Bearer {DIEGO_TOKEN}"})
-
-    assert maria.json()["actor"] == "maria@volta.mx"
-    assert diego.json()["actor"] == "diego@volta.mx"
-    assert maria.json()["shared_token"] is False
+    assert client.get("/api/orders").status_code == 200
+    assert client.get("/api/session").json()["actor"] == "portal-operator"
 
 
-def test_the_single_token_still_works_and_says_it_is_shared() -> None:
-    """An existing deployment keeps working, and the portal admits what the name means."""
-    client = _app_with(
-        Settings(portal_api_token=SHARED_TOKEN, portal_manager_identity="ops@volta.mx")
-    )
+def test_portal_uses_configured_audit_identity_without_login() -> None:
+    client = _app_with(Settings(portal_manager_identity="ops@volta.mx"))
 
-    body = client.get("/api/session", headers={"Authorization": f"Bearer {SHARED_TOKEN}"}).json()
-
-    assert body["actor"] == "ops@volta.mx"
-    assert body["shared_token"] is True
-
-
-def test_revoking_one_person_leaves_the_others_alone() -> None:
-    """The other half of per-person tokens: access can be taken away one at a time."""
-    both = Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx,{DIEGO_TOKEN}:diego@volta.mx")
-    revoked = Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx")
-    diego = {"Authorization": f"Bearer {DIEGO_TOKEN}"}
-    maria = {"Authorization": f"Bearer {MARIA_TOKEN}"}
-
-    assert _app_with(both).get("/api/session", headers=diego).status_code == 200
-    assert _app_with(revoked).get("/api/session", headers=diego).status_code == 401
-    assert _app_with(revoked).get("/api/session", headers=maria).status_code == 200
-
-
-def test_an_unconfigured_portal_refuses_rather_than_opens() -> None:
-    """503, not 200. /api carries the only endpoint that can write a price cap."""
-    client = _app_with(Settings(portal_tokens="", portal_api_token=""))
-
-    assert client.get("/api/orders").status_code == 503
-
-
-def test_a_wrong_token_is_401_not_a_hint() -> None:
-    client = _app_with(Settings(portal_tokens=f"{SHARED_TOKEN}:ops@volta.mx"))
-
-    response = client.get("/api/orders", headers={"Authorization": "Bearer tok-wrong"})
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == "unauthorized"
+    assert client.get("/api/session").json()["actor"] == "ops@volta.mx"

@@ -10,10 +10,10 @@ from app.config import Settings
 from app.main import create_app
 
 
-def test_production_refuses_to_start_without_security_gates() -> None:
+def test_production_refuses_to_start_without_readiness_gates() -> None:
     import pytest
 
-    with pytest.raises(RuntimeError, match="PORTAL_API_TOKEN"):
+    with pytest.raises(RuntimeError, match="PRODUCTION_RETENTION_READY"):
         create_app(Settings(environment="production"))
 
 

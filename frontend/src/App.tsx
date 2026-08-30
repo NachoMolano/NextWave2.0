@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, hasPortalToken, setPortalToken, voltaApi } from './api'
+import { ApiError, voltaApi } from './api'
 import type {
   Approval,
   BusinessProfile,
@@ -118,37 +118,6 @@ export default function App() {
       .then(setSession)
       .catch(() => setSession(null))
   }, [])
-  const [authenticated, setAuthenticated] = useState(hasPortalToken)
-  const [token, setToken] = useState('')
-
-  if (!authenticated) {
-    return (
-      <main className="content-shell">
-        <section className="surface action-panel">
-          <p className="eyebrow">Trusted manager access</p>
-          <h1>Sign in to the control tower</h1>
-          <p>The token stays in this browser tab and is never embedded in the application.</p>
-          <input
-            className="field"
-            type="password"
-            value={token}
-            placeholder="Manager bearer token"
-            onChange={(event) => setToken(event.target.value)}
-          />
-          <button
-            className="primary-button"
-            disabled={!token.trim()}
-            onClick={() => {
-              setPortalToken(token.trim())
-              setAuthenticated(true)
-            }}
-          >
-            Continue
-          </button>
-        </section>
-      </main>
-    )
-  }
 
   return (
     <div className="app-shell">
@@ -188,12 +157,6 @@ export default function App() {
             <>
               <span className="source-dot source-dot-actor" />
               <span>Acting as {session.actor}</span>
-              {session.shared_token && (
-                <small>
-                  Shared token: this name is the deployment&rsquo;s, not a person who signed
-                  in. Mandates and awards are recorded against it.
-                </small>
-              )}
             </>
           )}
         </div>
@@ -1509,8 +1472,7 @@ function ProfilePage() {
         <p className="configuration-note">
           The warehouse address is spoken to carriers and the agent&rsquo;s name is how it
           introduces itself. A change to either changes what the system says on a recorded
-          line, so it is recorded against whoever is signed in — taken from the credential,
-          not from a text box, because a typed name authenticates nothing.
+          line, so it is recorded against the configured portal actor rather than a text box.
         </p>
         <div className="dialog-actions">
           <button className="secondary-button" disabled={!dirty || busy} onClick={load}>

@@ -74,7 +74,7 @@ class SetMandateRequest(BaseModel):
     """Step 4. The only shape in the system that can raise a price ceiling.
 
     ``expected_version`` makes a stale dashboard write fail instead of silently replacing a
-    newer mandate. The audit actor comes from authenticated server configuration.
+    newer mandate. The audit actor comes from server configuration.
     """
 
     cap_amount_cents: int = Field(gt=0)
@@ -302,25 +302,17 @@ class BusinessProfileUpdate(BaseModel):
     warehouse_hours: str | None = None
     warehouse_notes: str | None = None
 
-    # No `updated_by` here on purpose. It comes from the credential, not from the form -- a
-    # name typed into a text box is unauthenticated, and anyone could type anyone. The mandate
-    # and approval paths already work this way; this one was the odd exception.
+    # No `updated_by` here on purpose. It comes from server configuration, not from the form.
+    # The mandate and approval paths use the same deployment-level audit actor.
 
 
 class Session(BaseModel):
-    """Who the portal thinks you are.
+    """The deployment identity recorded for portal actions.
 
     Exposed so the portal can say *acting as X* rather than leaving an operator to guess whose
-    name their next approval will carry. It is also how the sign-in screen can tell a good
-    token from a bad one without pretending to fetch something else.
+    name their next approval will carry.
     """
 
     model_config = ConfigDict(frozen=True)
 
     actor: str = Field(description="Recorded against every mandate, award and profile change.")
-    shared_token: bool = Field(
-        default=True,
-        description="True while the deployment authenticates with one shared token. The actor "
-        "is then the deployment's configured identity, not a person who signed in -- so this "
-        "attribution is only as specific as the token is. Per-person tokens make it true.",
-    )

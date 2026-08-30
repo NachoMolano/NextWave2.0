@@ -10,9 +10,9 @@ policy: there must be no way to write state here that skips the boundary.
 POST /api/orders/{id}/mandate is the exception, and deliberately so. It writes straight to
 store/, because tools/ exists to gate *the model*: it evaluates a proposal that arrived in a
 conversation against an authority granted elsewhere. A mandate is that authority. There is no
-proposal to evaluate and no counterparty involved -- an authenticated human is the source of
-the permission -- so routing it through the proposal boundary would not add a check, it would
-only blur where authority comes from. Nothing reachable from a phone call can reach this path.
+proposal to evaluate and no counterparty involved -- the portal is the source of the
+permission -- so routing it through the proposal boundary would not add a check, it would only
+blur where authority comes from. Nothing reachable from a phone call can reach this path.
 
 The router is a factory rather than a module of globals so that tests build it over
 InMemoryStore with no network, and so main.py stays a composition root that names its
@@ -29,10 +29,9 @@ function still stubbed by its owner answer 501 and name the owner. OWNER: Track 
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from hmac import compare_digest
 from typing import Annotated, Protocol
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.nextaction import next_action
 from app.api.schemas import (
@@ -104,8 +103,8 @@ Sweep = Callable[[], Awaitable[list[str]]]
 
 #: Placing the calls a plan describes. Injected for the same reason as ``sweep``: ``api`` may
 #: not import ``vapi`` under the layering contract, and it should not -- the portal is the
-#: authenticated human's surface and the phone is a stranger's. main.py is the one place
-#: allowed to know both, so it hands this down with the placer already bound.
+#: user-operated surface and the phone is a stranger's. main.py is the one place allowed to
+#: know both, so it hands this down with the placer already bound.
 Dialler = Callable[[list[DialPlan]], Awaitable[object]]
 
 
@@ -141,33 +140,11 @@ def create_api_router(
     now: Callable[[], datetime],
     settings: Settings,
 ) -> APIRouter:
-    identities = settings.portal_identities()
-    shared = not settings.portal_tokens.strip()
+    async def portal_actor() -> str:
+        """The unauthenticated portal still records a stable audit actor."""
+        return settings.portal_manager_identity.strip() or "portal-operator"
 
-    async def authenticate(authorization: Annotated[str | None, Header()] = None) -> str:
-        """Who is calling. The answer becomes the audit actor, so it comes from the credential.
-
-        Every configured token is compared, and always all of them: returning early on the
-        first match would make the response time depend on which token was presented, which
-        over enough requests says something about the set of valid tokens. `compare_digest`
-        is constant-time per comparison; the loop keeps the number of comparisons constant too.
-        """
-        if not identities:
-            raise HTTPException(status_code=503, detail="portal authentication is not configured")
-
-        scheme, separator, credential = (authorization or "").partition(" ")
-        if not separator or scheme.lower() != "bearer":
-            raise HTTPException(status_code=401, detail="unauthorized")
-
-        matched: str | None = None
-        for token, identity in identities.items():
-            if compare_digest(credential, token):
-                matched = identity
-        if matched is None:
-            raise HTTPException(status_code=401, detail="unauthorized")
-        return matched
-
-    router = APIRouter(tags=["portal"], dependencies=[Depends(authenticate)])
+    router = APIRouter(tags=["portal"])
 
     async def _load(order_id: str) -> Order:
         with _guard():
@@ -267,7 +244,7 @@ def create_api_router(
 
     @router.post("/orders/{order_id}/mandate", response_model=OrderAggregate)
     async def set_mandate(
-        order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(authenticate)]
+        order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(portal_actor)]
     ) -> OrderAggregate:
         """The only price-cap writer in the system.
 
@@ -279,8 +256,10 @@ def create_api_router(
         if order.mandate_version != body.expected_version:
             raise HTTPException(
                 status_code=409,
-                detail=(f"stale mandate version {body.expected_version}; "
-                        f"current version is {order.mandate_version}"),
+                detail=(
+                    f"stale mandate version {body.expected_version}; "
+                    f"current version is {order.mandate_version}"
+                ),
             )
         updated = order.model_copy(
             update={
@@ -359,7 +338,7 @@ def create_api_router(
     async def decide_approval(
         approval_id: str,
         body: ApprovalDecisionRequest,
-        actor: Annotated[str, Depends(authenticate)],
+        actor: Annotated[str, Depends(portal_actor)],
     ) -> Approval:
         """Steps 9 and 10. Approving an award is what engages the single-award lock."""
         with _guard():
@@ -458,31 +437,28 @@ def create_api_router(
         with _guard():
             row = await store.company_profile()
         if row is None:
-            raise HTTPException(
-                status_code=503, detail="no company profile; apply migration 0003"
-            )
+            raise HTTPException(status_code=503, detail="no company profile; apply migration 0003")
         return BusinessProfile.model_validate(row)
 
     @router.get("/session", response_model=Session)
-    async def get_session(actor: Annotated[str, Depends(authenticate)]) -> Session:
-        """Who this token is. Lets the portal show whose name an action will carry."""
-        return Session(actor=actor, shared_token=shared)
+    async def get_session(actor: Annotated[str, Depends(portal_actor)]) -> Session:
+        """The deployment identity recorded for portal actions."""
+        return Session(actor=actor)
 
     @router.put("/profile", response_model=BusinessProfile)
     async def update_profile(
-        body: BusinessProfileUpdate, actor: Annotated[str, Depends(authenticate)]
+        body: BusinessProfileUpdate, actor: Annotated[str, Depends(portal_actor)]
     ) -> BusinessProfile:
         """Edit the profile. `updated_by` is required, not decorative.
 
         The warehouse address is read out loud to carriers and the agent's name is how it
         introduces itself. A change to either is a change to what the system says on a
-        recorded line, so it carries whoever made it -- the same argument as the mandate, and
-        taken from the same place: the credential. A name typed into a form authenticates
-        nothing.
+        recorded line, so it carries the configured portal actor -- the same source as the
+        mandate and award.
         """
         values: dict[str, object] = body.model_dump(exclude_none=True)
         values["updated_at"] = now().isoformat()
-        # From the credential, not the body. Same rule as the mandate and the award.
+        # From server configuration, not the body. Same rule as the mandate and the award.
         values["updated_by"] = actor
         with _guard():
             row = await store.save_company_profile(values)
