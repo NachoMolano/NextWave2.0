@@ -1,0 +1,81 @@
+{
+  "_source": "Supabase project 'Execute' (hizwyjrjvzrdohuxklle), legacy 30-table schema, tables call_cases + call_transcript_events. Exported 2026-08-30 by Track C before the schema was dropped.",
+  "_why": "Real recorded test calls against the OLD Twilio+Deepgram stack. Not synthetic. Kept because three of the brief's ugly cases appear verbatim in caller speech: an unparseable amount with a foreign currency, a mid-call demand for a human, and a date the agent had to restate as an explicit calendar date. Useful as fixture material for Track A (tests/fixtures/hostile/) and Track D (ScriptedReportModel inputs).",
+  "_caveats": [
+    "Anchors are Twilio stream offsets (audio_offset_ms). Vapi's equivalent is artifact.messages[].secondsFromStart, units unconfirmed until CP4.",
+    "speaker 'agent' = Volta, 'caller' = the counterparty. All calls inbound to the Twilio number.",
+    "+573052588844 is a real handset used for testing. Do not dial it from a test.",
+    "call_recaps and call_briefs rows existed but were all NULL for these four calls."
+  ],
+  "calls": [
+    {
+      "id": "5923c5a3-d225-4cb5-8d64-eb5cca5403e4",
+      "started_at": "2026-08-29T23:15:56Z",
+      "from": "+573052588844", "to": "+16166122459",
+      "ugly_cases": ["ambiguous amount + foreign currency", "carrier refuses to clarify"],
+      "turns": [
+        [11455, "caller", "Sí, tengo un minuto."],
+        [13935, "agent", "Perfecto; necesito que me diga disponibilidad de camión, tipo de equipo y tarifa para un contenedor de 40 HC desde Manzanillo (patio o Muelle) hasta bodega en Guadalajara, y repito: contenedor de 40 HC hacia bodega en Guadalajara, ¿entendido?"],
+        [32995, "caller", "Sí, vale, para un"],
+        [37755, "caller", "h c va a tocar nuestra comida más grande, entonces van a ser"],
+        [42725, "caller", "más o menos ciento ochenta y cinco millones de pesos colombianos,"],
+        [47365, "caller", "y no más podría, sino hasta dentro de una semana. Entonces, el"],
+        [52335, "caller", "sábado ¿qué es eso?, ¿como seis de septiembre?"],
+        [55915, "agent", "No entendí: dijiste \"ciento ochenta y cinco millones de pesos colombianos\" o \"ciento ochenta y cinco\" con otra moneda; confirma la cifra y la moneda, por favor."],
+        [69445, "caller", "Creo que fui bastante claro."],
+        [72165, "agent", "No entendí; confírmame la cifra exacta y la moneda: ¿\"ciento ochenta y cinco millones de pesos colombianos\" (185,000,000 COP) o era otra cantidad/moneda?"]
+      ]
+    },
+    {
+      "id": "03ebabe6-b427-4789-a722-4ef396148d3e",
+      "started_at": "2026-08-30T00:51:27Z",
+      "from": "+573052588844", "to": "+16166122459",
+      "ugly_cases": ["quote given in a foreign currency", "'plus tolls' - total not final", "agent restates a weekday as an explicit calendar date"],
+      "turns": [
+        [27835, "caller", "¿Aló?"],
+        [28555, "agent", "Dígame."],
+        [37655, "caller", "Sí, tenemos un minuto."],
+        [39574, "agent", "¿Cuál sería su tarifa y tiene chasis de 40 pies disponible para recoger entre el martes dos y el jueves cuatro de septiembre de dos mil veintiséis?"],
+        [56095, "caller", "Claro que sí, tenemos nomás hasta el el"],
+        [60685, "caller", "el jueves, antes de eso no es posible. Y"],
+        [65295, "caller", "si te si así te puede servir,"],
+        [66975, "agent", "Perfecto, repito: sólo puede el jueves cuatro de septiembre de dos mil veintiséis; ¿cuál es su tarifa y qué incluye exactamente?"],
+        [82385, "caller", "Tantas millones de pesos colombianos, pues incluye"],
+        [86365, "caller", "transporte hasta almacén."],
+        [88524, "agent", "Perdón, no entendí la cifra. ¿Qué número dijo, por favor, y en qué moneda?"],
+        [96895, "caller", "Cinco millones de pesos colombianos."],
+        [100095, "agent", "Repito: cinco millones de pesos colombianos. ¿Ese es el total por el servicio y qué incluye aparte del transporte hasta almacén— espera, caseta, sobrepeso, seguro y por cuánto tiempo mantiene la tarifa?"],
+        [124585, "caller", "Por una semana y tenemos seguro"],
+        [128325, "caller", "caso de robo o o daños no"],
+        [132405, "agent", "Entendido: cinco millones de pesos colombianos por una semana, con seguro contra robo y daños incluido y recoge sólo el jueves cuatro de septiembre de dos mil veintiséis; ¿las casetas, el sobrepeso y el combustible están incluidos o se cobran aparte?"],
+        [162865, "caller", "Thank you."],
+        [163825, "agent", "De nada. Estamos comparando opciones; alguien de Textiles Pacífico le escribirá en mensaje para confirmar si procede."]
+      ]
+    },
+    {
+      "id": "bf457b7f-a7a1-45b2-840b-75909e790b43",
+      "started_at": "2026-08-30T01:01:03Z",
+      "from": "+573052588844", "to": "+16166122459",
+      "ugly_cases": ["direct request for a human, before identity is established"],
+      "turns": [
+        [3186, "caller", "A ver."],
+        [4146, "agent", "Dígame su nombre, la empresa y un dato operativo que lo conecte con la operación, por ejemplo referencia, placa o número de contenedor."],
+        [9176, "caller", "Hola, vuelta, disculpa, me gustaría hablar con una persona real."]
+      ]
+    },
+    {
+      "id": "ace6a2c5-05b9-4c92-9f97-66d9f2658bb0",
+      "started_at": "2026-08-30T01:13:52Z",
+      "from": "+573052588844", "to": "+16166122459",
+      "ugly_cases": ["unverified caller", "repeated demand for a human", "claimed identity with no operational fact"],
+      "turns": [
+        [10987, "caller", "Hola, buenas. ¿Me ayudaría?"],
+        [13547, "caller", "Comunicándome con una persona?"],
+        [15307, "agent", "Claro, con gusto. ¿Cómo se llama y de qué compañía marca, por favor?"],
+        [29877, "caller", "Pues llamo desde Pocolaps, Me llamo Luis."],
+        [34867, "agent", "Mucho gusto, Luis de Pocolaps; ¿me da la referencia de la operación o el número de contenedor, por favor?"],
+        [51157, "caller", "Solo solo quiero poder hablar con una persona, por favor."]
+      ]
+    }
+  ]
+}
