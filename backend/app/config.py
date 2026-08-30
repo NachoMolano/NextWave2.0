@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     manager_email: str = ""
     manager_whatsapp: str = ""
 
+    # --- Human portal authority ---
+    #: Demo-safe authentication for every /api route. The token identifies exactly one
+    #: trusted manager; request bodies never get to choose their own audit actor.
+    portal_api_token: str = ""
+    portal_manager_identity: str = ""
+
     # --- Escalation ---
     #: Where a live call is transferred when the agent hands off to a person.
     escalation_phone_number: str = ""
@@ -81,7 +87,39 @@ class Settings(BaseSettings):
     sweep_interval_seconds: int = 60
 
     public_base_url: str = ""
+    #: Recording is opt-in. Enabling it requires an approved consent/retention process.
+    recording_enabled: bool = False
+    recording_consent_notice: str = ""
+    production_tenant_auth_ready: bool = False
+    production_retention_ready: bool = False
+    production_provider_deletion_ready: bool = False
+    production_legal_review_ready: bool = False
     environment: Literal["local", "demo", "production"] = "local"
+
+    def production_errors(self) -> tuple[str, ...]:
+        """Return missing production gates without exposing secret values."""
+        if self.environment != "production":
+            return ()
+        required = {
+            "VAPI_API_KEY": self.vapi_api_key,
+            "VAPI_PHONE_NUMBER_ID": self.vapi_phone_number_id,
+            "VAPI_SERVER_SECRET": self.vapi_server_secret,
+            "SUPABASE_URL": self.supabase_url,
+            "SUPABASE_SECRET_KEY": self.supabase_secret_key,
+            "PORTAL_API_TOKEN": self.portal_api_token,
+            "PORTAL_MANAGER_IDENTITY": self.portal_manager_identity,
+        }
+        missing = [name for name, value in required.items() if not value.strip()]
+        if self.recording_enabled and not self.recording_consent_notice.strip():
+            missing.append("RECORDING_CONSENT_NOTICE")
+        gates = {
+            "PRODUCTION_TENANT_AUTH_READY": self.production_tenant_auth_ready,
+            "PRODUCTION_RETENTION_READY": self.production_retention_ready,
+            "PRODUCTION_PROVIDER_DELETION_READY": self.production_provider_deletion_ready,
+            "PRODUCTION_LEGAL_REVIEW_READY": self.production_legal_review_ready,
+        }
+        missing.extend(name for name, ready in gates.items() if not ready)
+        return tuple(missing)
 
 
 @lru_cache

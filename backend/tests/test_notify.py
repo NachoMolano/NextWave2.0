@@ -144,15 +144,15 @@ async def test_resend_and_twilio_success_are_offline() -> None:
 
 
 @pytest.mark.parametrize(
-    ("response", "expected"),
+    ("response", "expected", "status"),
     [
-        (httpx.Response(503, text="down"), "HTTP 503"),
-        (httpx.Response(200, text="not-json"), "malformed JSON"),
-        (httpx.Response(200, json={}), "missing id"),
+        (httpx.Response(503, text="down"), "HTTP 503", DeliveryStatus.FAILED),
+        (httpx.Response(200, text="not-json"), "malformed", DeliveryStatus.UNKNOWN),
+        (httpx.Response(200, json={}), "missing id", DeliveryStatus.UNKNOWN),
     ],
 )
 async def test_provider_failures_return_failed(
-    response: httpx.Response, expected: str
+    response: httpx.Response, expected: str, status: DeliveryStatus
 ) -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _request: response)
@@ -164,7 +164,7 @@ async def test_provider_failures_return_failed(
                 body="Message",
             )
         )
-    assert result.status is DeliveryStatus.FAILED
+    assert result.status is status
     assert result.error and expected in result.error
 
 
@@ -195,6 +195,6 @@ async def test_transport_exception_and_missing_configuration_never_raise() -> No
         )
     )
 
-    assert transport_failure.status is DeliveryStatus.FAILED
+    assert transport_failure.status is DeliveryStatus.UNKNOWN
     assert missing.status is DeliveryStatus.FAILED
     assert null.status is DeliveryStatus.FAILED

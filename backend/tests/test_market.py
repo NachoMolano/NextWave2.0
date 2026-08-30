@@ -246,7 +246,7 @@ async def test_an_award_needs_an_approved_approval() -> None:
         order_id="order-1",
         kind=ApprovalKind.AWARD_APPROVAL,
         reason=ApprovalReason.AWARD_SELECTED,
-        context={"winner_quote_id": quote_id},
+        context={"winner_quote_id": quote_id, "mandate_version": 1},
         status=ApprovalStatus.OPEN,
     )
 
@@ -262,7 +262,7 @@ async def test_a_granted_award_accepts_exactly_one_quote() -> None:
         order_id="order-1",
         kind=ApprovalKind.AWARD_APPROVAL,
         reason=ApprovalReason.AWARD_SELECTED,
-        context={"winner_quote_id": quote_id},
+        context={"winner_quote_id": quote_id, "mandate_version": 1},
         status=ApprovalStatus.APPROVED,
     )
 
@@ -290,7 +290,7 @@ async def test_a_second_award_conflicts_and_raises_an_approval() -> None:
             order_id="order-1",
             kind=ApprovalKind.AWARD_APPROVAL,
             reason=ApprovalReason.AWARD_SELECTED,
-            context={"winner_quote_id": quote_id},
+            context={"winner_quote_id": quote_id, "mandate_version": 1},
             status=ApprovalStatus.APPROVED,
         )
 

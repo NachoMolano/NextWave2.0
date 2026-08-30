@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, voltaApi } from './api'
+import { ApiError, hasPortalToken, setPortalToken, voltaApi } from './api'
 import type {
   Approval,
   CallDetail,
@@ -96,6 +96,37 @@ function humanise(value: string): string {
 
 export default function App() {
   const [route, navigate] = useRoute()
+  const [authenticated, setAuthenticated] = useState(hasPortalToken)
+  const [token, setToken] = useState('')
+
+  if (!authenticated) {
+    return (
+      <main className="content-shell">
+        <section className="surface action-panel">
+          <p className="eyebrow">Trusted manager access</p>
+          <h1>Sign in to the control tower</h1>
+          <p>The token stays in this browser tab and is never embedded in the application.</p>
+          <input
+            className="field"
+            type="password"
+            value={token}
+            placeholder="Manager bearer token"
+            onChange={(event) => setToken(event.target.value)}
+          />
+          <button
+            className="primary-button"
+            disabled={!token.trim()}
+            onClick={() => {
+              setPortalToken(token.trim())
+              setAuthenticated(true)
+            }}
+          >
+            Continue
+          </button>
+        </section>
+      </main>
+    )
+  }
 
   return (
     <div className="app-shell">
@@ -442,11 +473,10 @@ function OrderDetail({
                   key={approval.id}
                   approval={approval}
                   busy={busy}
-                  onDecide={(status, decidedBy) =>
+                  onDecide={(status) =>
                     act(`Approval ${status}.`, () =>
                       voltaApi.decideApproval(String(approval.id), {
                         status,
-                        decided_by: decidedBy,
                         note: null,
                       }),
                     )
@@ -477,7 +507,6 @@ function MandatePanel({
   const [open, setOpen] = useState(false)
   const [cap, setCap] = useState('9000')
   const [currency, setCurrency] = useState('USD')
-  const [setBy, setSetBy] = useState('')
 
   const submit = () => {
     const now = new Date()
@@ -490,7 +519,7 @@ function MandatePanel({
       pickup_not_after: later.toISOString(),
       delivery_deadline: null,
       commitment_mode: 'human_escalation',
-      set_by: setBy,
+      expected_version: mandate.version,
     })
     setOpen(false)
   }
@@ -544,23 +573,13 @@ function MandatePanel({
             maxLength={3}
             onChange={(e) => setCurrency(e.target.value)}
           />
-          <label className="eyebrow" htmlFor="setby">
-            Your name — this is the audit record
-          </label>
-          <input
-            id="setby"
-            className="field"
-            value={setBy}
-            placeholder="ops@volta.test"
-            onChange={(e) => setSetBy(e.target.value)}
-          />
           <div className="dialog-actions">
             <button className="secondary-button" onClick={() => setOpen(false)}>
               Cancel
             </button>
             <button
               className="primary-button"
-              disabled={busy || !setBy.trim() || !cap.trim()}
+              disabled={busy || !cap.trim()}
               onClick={submit}
             >
               {mandate.is_granted ? 'Raise the ceiling' : 'Grant the mandate'}
@@ -694,33 +713,25 @@ function ApprovalCard({
 }: {
   approval: Approval
   busy: boolean
-  onDecide: (status: 'approved' | 'rejected', decidedBy: string) => void
+  onDecide: (status: 'approved' | 'rejected') => void
 }) {
-  const [decidedBy, setDecidedBy] = useState('')
-
   return (
     <div className="snapshot">
       <strong>{humanise(approval.kind)}</strong>
       <span>{humanise(approval.reason)}</span>
       <small>Raised {formatDate(approval.raised_at)}</small>
-      <input
-        className="field"
-        value={decidedBy}
-        placeholder="your name — recorded against the decision"
-        onChange={(e) => setDecidedBy(e.target.value)}
-      />
       <div className="dialog-actions">
         <button
           className="secondary-button"
-          disabled={busy || !decidedBy.trim()}
-          onClick={() => onDecide('rejected', decidedBy)}
+          disabled={busy}
+          onClick={() => onDecide('rejected')}
         >
           Reject
         </button>
         <button
           className="primary-button"
-          disabled={busy || !decidedBy.trim()}
-          onClick={() => onDecide('approved', decidedBy)}
+          disabled={busy}
+          onClick={() => onDecide('approved')}
         >
           Approve
         </button>
