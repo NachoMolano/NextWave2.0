@@ -18,6 +18,7 @@ import pytest
 from app.config import Settings
 from app.domain import CallContext, CallPhase
 from app.vapi.assistant import (
+    ENDPOINTING_SPEAKERS,
     STOP_SPEAKING_PLAN,
     TOOL_ARGUMENT_MODELS,
     WARM_TRANSFER_PLAN,
@@ -237,7 +238,9 @@ def test_a_number_still_being_spoken_is_not_a_finished_turn() -> None:
     ]
 
     assert rules, "no rule means the punctuation heuristic decides mid-number"
-    assert all(rule["type"] == "user" for rule in rules)
+    # "user" is what this said, and what the code said, and Vapi rejects the entire call for
+    # it. A test that agrees with the bug is how three carriers went un-dialled.
+    assert all(rule["type"] == "customer" for rule in rules)
     assert all(rule["timeoutSeconds"] >= 1.0 for rule in rules)
 
 
@@ -443,3 +446,20 @@ def test_an_optional_argument_stays_optional() -> None:
     schema = quote["function"]["parameters"]["properties"]["valid_until"]
     assert schema["type"] == ["string", "null"]
     assert "valid_until" not in quote["function"]["parameters"].get("required", [])
+
+
+def test_endpointing_rules_use_a_speaker_vapi_accepts() -> None:
+    """Vapi accepts exactly assistant, customer or both, and 400s the whole call otherwise.
+
+    These rules said "user". Every dial on 30 Aug came back "Vapi refused the call with 400:
+    each value in customEndpointingRules.type must be one of the following values: assistant,
+    customer, both" -- three carriers un-dialled, and invisible until the campaign stopped
+    swallowing dial failures. The value is a vendor enum, not a synonym to be tidied.
+    """
+    rules = build_assistant(PROFILE, _context(), _settings())["startSpeakingPlan"][
+        "customEndpointingRules"
+    ]
+
+    assert rules, "the numeric endpointing rules protect invariant 8 and must be sent"
+    for rule in rules:
+        assert rule["type"] in ENDPOINTING_SPEAKERS, rule

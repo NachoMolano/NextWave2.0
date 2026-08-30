@@ -43,6 +43,7 @@ from app.tools.model import (
 )
 
 __all__ = [
+    "ENDPOINTING_SPEAKERS",
     "STOP_SPEAKING_PLAN",
     "TOOL_ARGUMENT_MODELS",
     "WARM_TRANSFER_PLAN",
@@ -159,9 +160,15 @@ _NUMBER_WORDS = (
 #: Anchored to the end of the turn on purpose. Matching a digit anywhere would put two dead
 #: seconds after "yes, 8500 works for me", which is the sluggishness these rules exist to
 #: avoid everywhere else.
+#: ``customer`` is the caller. Vapi accepts exactly ``assistant``, ``customer`` or ``both``
+#: here, and rejects the whole call with a 400 for anything else -- these rules said "user",
+#: so every dial on 30 Aug was refused before it rang. The name is checked by
+#: ``test_endpointing_rules_use_a_speaker_vapi_accepts``; it is not a synonym to be tidied.
+ENDPOINTING_SPEAKERS = frozenset({"assistant", "customer", "both"})
+
 _NUMERIC_ENDPOINTING_RULES: list[dict[str, Any]] = [
-    {"type": "user", "regex": r"\d\s*$", "timeoutSeconds": 2.0},
-    {"type": "user", "regex": rf"\b({_NUMBER_WORDS})\s*$", "timeoutSeconds": 2.0},
+    {"type": "customer", "regex": r"\d\s*$", "timeoutSeconds": 2.0},
+    {"type": "customer", "regex": rf"\b({_NUMBER_WORDS})\s*$", "timeoutSeconds": 2.0},
 ]
 
 #: Vapi's own model, and the only smart-endpointing provider that is not English-only.
@@ -317,6 +324,25 @@ def build_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
         }
         for name, model in enabled_models.items()
     ]
+
+    # Without this the agent has no way to hang up. On the 30 Aug calls it said "I will end
+    # the call now", then sat in dead air until the carrier asked "so are you gonna hang
+    # up?" and hung up themselves -- thirty seconds of silence on every call, and
+    # endedReason "customer-ended-call" on a call we placed. It carries no server block:
+    # ending a call decides nothing, so there is nothing for policy to authorize.
+    tools.append(
+        {
+            "type": "endCall",
+            "function": {
+                "name": "endCall",
+                "description": (
+                    "Hang up. Use it once you have said goodbye and the other side has "
+                    "said goodbye back, or when they say they are hanging up. Never use "
+                    "it while a question is open or a transfer is in progress."
+                ),
+            },
+        }
+    )
 
     # No destinations: an empty transferCall is what makes Vapi send
     # transfer-destination-request to our server URL and let us decide -- or refuse.
