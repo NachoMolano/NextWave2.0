@@ -211,7 +211,37 @@ def test_turn_taking_is_stated_rather_than_inherited() -> None:
     start = assistant["startSpeakingPlan"]
     assert isinstance(start, dict)
     assert start["smartEndpointingPlan"]["provider"], "a model decides, not punctuation"
-    assert assistant["stopSpeakingPlan"]["numWords"] == 0, "yield on voice, not on words"
+    stop = assistant["stopSpeakingPlan"]
+    assert "numWords" in stop and "voiceSeconds" in stop, "the trigger is ours to state"
+
+
+def test_the_recap_yields_faster_than_the_rest_of_the_call() -> None:
+    """The award phase keeps the twitchy trigger; nothing else does.
+
+    ``numWords: 0`` yields on 100ms of anything voice-shaped, which is right while reading
+    terms back -- a carrier objecting mid-recap must be heard before the sentence ends -- and
+    wrong on an inbound call from a moving truck, where cab noise is also voice-shaped. The
+    30 Aug inbound call has the agent cut dead after "Thank you for" and never recovering.
+    """
+    award = build_assistant(PROFILE, _context(CallPhase.AWARD), _settings())["stopSpeakingPlan"]
+    inbound = build_assistant(PROFILE, _context(CallPhase.INBOUND), _settings())["stopSpeakingPlan"]
+
+    assert award["numWords"] == 0, "an objection to the terms cannot wait for two words"
+    assert inbound["numWords"] > 0, "voice-activity alone is not a turn on a bad line"
+    assert inbound["voiceSeconds"] > award["voiceSeconds"]
+
+
+def test_the_call_does_not_inherit_an_office_it_is_not_sitting_in() -> None:
+    """Both audio keys stated, because the Vapi default backgroundSound is ambient office.
+
+    Omitted until 30 Aug, so every call carried whatever the account default was, and a
+    carrier hearing office chatter behind a voice hears a bad line -- reported as
+    interference on the inbound leg, where nobody could explain why outbound sounded fine.
+    """
+    assistant = build_assistant(PROFILE, _context(), _settings())
+
+    assert assistant["backgroundSound"] == "off"
+    assert assistant["backgroundDenoisingEnabled"] is True
 
 
 def test_a_backchannel_does_not_cut_the_recap_short() -> None:

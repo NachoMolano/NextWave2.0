@@ -67,26 +67,6 @@ _LIVE_QUOTES = frozenset({QuoteStatus.PROPOSED, QuoteStatus.SELECTED})
 DIAL_ROUND_PLACED_NOTHING = "rfq dial round placed nothing"
 
 
-def _spoken_window(order: Order) -> str | None:
-    """The mandate's pickup window, in the grammar the prompt reads back.
-
-    This was simply missing, and the cost was not cosmetic. The agent went onto a live call
-    with no pickup window at all, invented one -- "pickup on or around April thirtieth",
-    against a mandate of 1-3 September -- and policy then denied its own quote for
-    ``invalid_window``. Negotiating blind on the one dimension the ceiling is checked
-    against is worse than not negotiating.
-
-    The same-month form matches ``prompts._runtime_pickup_answer`` exactly, so the agent
-    gets the short spoken answer for "when?" instead of composing one.
-    """
-    start, end = order.pickup_not_before, order.pickup_not_after
-    if start is None or end is None:
-        return None
-    if start.year == end.year and start.month == end.month:
-        return f"between {start:%B} {start.day} and {start:%B} {end.day}, {start.year}"
-    return f"between {start:%B} {start.day} and {end:%B} {end.day}, {end.year}"
-
-
 class Market:
     def __init__(self, store: Store, *, now: Callable[[], datetime]) -> None:
         self._store = store
@@ -246,7 +226,6 @@ class Market:
         return CallContext(
             phase=CallPhase.RFQ,
             today=self._now().strftime("%A, %d %B %Y"),
-            pickup_window=_spoken_window(order),
             reference=order.reference,
             origin=order.origin,
             destination=order.destination,
@@ -255,7 +234,14 @@ class Market:
             weight=order.weight,
             # Without this the agent has no date to state and has to ask the carrier when
             # they could do it, which is the opposite of buying: the window is ours and it
-            # is the second thing said on the call.
+            # is the second thing said on the call. Missing it once put the agent on a live
+            # call inventing "pickup on or around April thirtieth" against a mandate of 1-3
+            # September, and policy then denied the agent's own quote for invalid_window.
+            #
+            # Two of these were merged in on 30 Aug -- one from each side of a conflict --
+            # which is a SyntaxError, so app.main did not import at all. The other spelling
+            # was a local copy of this helper that rendered a same-day window as "between
+            # September 2 and September 2".
             pickup_window=spoken_window(order.pickup_not_before, order.pickup_not_after),
             counterparty_name=carrier.name,
             counterparty_contact=carrier.contact_name,

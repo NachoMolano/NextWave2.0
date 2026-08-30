@@ -64,6 +64,8 @@ class InMemoryStore:
         self.deliveries: list[tuple[OutboundMessage, DeliveryResult]] = []
         #: Every idempotency key ever accepted. The second attempt is refused.
         self._seen_keys: set[str] = set()
+        #: Mirrors the Postgres sequence in migration 0005. Monotonic, never reused.
+        self._reference_seq = 0
 
     # --- seeding helpers (tests only; not part of the Protocol) --------------------
 
@@ -200,6 +202,9 @@ class InMemoryStore:
         self.decisions[decision_id] = decision.model_copy(update={"id": decision_id})
         return decision_id
 
+    async def events_for_call(self, call_id: str) -> list[EventRow]:
+        return [event for event in self.events.values() if event.call_id == call_id]
+
     async def append_event(self, event: EventRow) -> bool:
         if event.idempotency_key in self._seen_keys:
             return False
@@ -266,6 +271,10 @@ class InMemoryStore:
         order_id = existing.id if existing else (order.id or _next_id("order", self.orders))
         self.orders[order_id] = order.model_copy(update={"id": order_id})
         return order_id
+
+    async def next_reference(self, prefix: str) -> str:
+        self._reference_seq += 1
+        return f"{prefix.strip().upper()}-{self._reference_seq:04d}"
 
     async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool:
         existing = self.orders.get(str(order.id))

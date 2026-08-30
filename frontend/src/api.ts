@@ -4,6 +4,8 @@ import type {
   BusinessProfileUpdate,
   ApprovalDecisionRequest,
   CallDetail,
+  ConfirmIntakeRequest,
+  NewOrderRequest,
   Carrier,
   Comparison,
   OrderAggregate,
@@ -71,6 +73,21 @@ export const voltaApi = {
   listOrders: (): Promise<OrderSummary[]> => request('/api/orders'),
 
   getOrder: (orderId: string): Promise<OrderAggregate> => request(`/api/orders/${orderId}`),
+
+  /**
+   * A cargo was received at port. The response carries the allocated folio, which is what
+   * the operator reads to the carrier and what the carrier reads back on an inbound call.
+   */
+  createOrder: (body: NewOrderRequest): Promise<OrderSummary> =>
+    request('/api/orders', { method: 'POST', body: JSON.stringify(body) }),
+
+  /**
+   * Stage 1, and a gate rather than a label: until a person confirms the release, no mandate
+   * may be granted and no carrier may be dialled. `released: false` clears it again, which is
+   * the stop switch when something changes after the market is open.
+   */
+  confirmIntake: (orderId: string, body: ConfirmIntakeRequest): Promise<OrderAggregate> =>
+    request(`/api/orders/${orderId}/intake`, { method: 'POST', body: JSON.stringify(body) }),
 
   /**
    * The only price-cap writer in the system. Nothing reachable from a phone call can call it,

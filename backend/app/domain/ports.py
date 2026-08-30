@@ -69,6 +69,15 @@ class Store(Protocol):
 
     async def quotes_for(self, order_id: str) -> list[QuoteRow]: ...
 
+    async def events_for_call(self, call_id: str) -> list[EventRow]:
+        """The append-only ledger for one call, oldest first.
+
+        Read by ``verify_caller`` to meter wrong identity answers. The events are already
+        written for the audit and ``append_event`` is keyed, so counting them is the one
+        tally a redelivered webhook cannot inflate.
+        """
+        ...
+
     async def quote(self, quote_id: str) -> QuoteRow | None: ...
 
     async def live_commitment(self, order_id: str) -> Commitment | None:
@@ -171,6 +180,15 @@ class Store(Protocol):
 
     async def save_order(self, order: Order) -> str:
         """Create or update by ``reference``. Returns the order id."""
+        ...
+
+    async def next_reference(self, prefix: str) -> str:
+        """Allocate the next order folio, e.g. ``OP-MZO-0007``.
+
+        A sequence rather than a count of existing rows: the folio is what an inbound caller
+        states to prove who they are, and two orders racing to the same one would let a
+        caller reach a load that is not theirs.
+        """
         ...
 
     async def record_delivery(self, message: OutboundMessage, result: DeliveryResult) -> str: ...

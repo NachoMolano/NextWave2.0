@@ -33,7 +33,7 @@ from pydantic import BaseModel
 
 from app.agent.prompts import build_greeting, build_runtime_system_prompt, escalation_line
 from app.config import Settings
-from app.domain import CallContext, CompanyProfile
+from app.domain import CallContext, CallPhase, CompanyProfile
 from app.tools.model import (
     ConfirmPreagreementArgs,
     LookupOrderArgs,
@@ -44,11 +44,13 @@ from app.tools.model import (
 
 __all__ = [
     "ENDPOINTING_SPEAKERS",
+    "PATIENT_STOP_SPEAKING_PLAN",
     "STOP_SPEAKING_PLAN",
     "TOOL_ARGUMENT_MODELS",
     "WARM_TRANSFER_PLAN",
     "build_assistant",
     "build_start_speaking_plan",
+    "build_stop_speaking_plan",
     "build_tool_definitions",
     "profile_from_settings",
     "spoken_today",
@@ -143,6 +145,31 @@ STOP_SPEAKING_PLAN: dict[str, Any] = {
         "ándale",
     ],
 }
+
+#: The same plan with the trigger backed off, for every phase that is not the award recap.
+#:
+#: ``numWords: 0`` yields on 100ms of anything voice-shaped. That is right when we are
+#: reading terms back and wrong everywhere else: the 30 Aug inbound call from a moving truck
+#: shows the agent cut dead after "Thank you for", because cab noise is voice-shaped. Waiting
+#: for two transcribed words costs a few hundred milliseconds and buys a turn that survives a
+#: bad line. The award recap keeps the twitchy plan -- there, being interrupted is the
+#: cheaper failure, because a carrier who objects mid-read-back must be heard immediately.
+PATIENT_STOP_SPEAKING_PLAN: dict[str, Any] = {
+    **STOP_SPEAKING_PLAN,
+    "numWords": 2,
+    "voiceSeconds": 0.2,
+}
+
+
+def build_stop_speaking_plan(context: CallContext) -> dict[str, Any]:
+    """How readily the agent yields, chosen by what the phase is for.
+
+    Copied rather than shared: a payload holding the module constant's own list lets one
+    call's plan be edited into the next.
+    """
+    plan = STOP_SPEAKING_PLAN if context.phase is CallPhase.AWARD else PATIENT_STOP_SPEAKING_PLAN
+    return {**plan, "acknowledgementPhrases": list(plan["acknowledgementPhrases"])}
+
 
 #: Words that mean a number is still being spoken. A carrier reading a rate says "eight" and
 #: then "five hundred"; endpointing on the pause between them is how "8500" becomes "8".
@@ -434,10 +461,13 @@ def build_assistant(
         },
         "voice": {"provider": voice_provider, "voiceId": voice_id},
         "startSpeakingPlan": build_start_speaking_plan(profile, settings),
-        "stopSpeakingPlan": {
-            **STOP_SPEAKING_PLAN,
-            "acknowledgementPhrases": list(STOP_SPEAKING_PLAN["acknowledgementPhrases"]),
-        },
+        "stopSpeakingPlan": build_stop_speaking_plan(context),
+        # Stated, not inherited. Both were omitted until 30 Aug, so both took whatever the
+        # Vapi account default happened to be -- and the default backgroundSound is an
+        # ambient office loop, which is what a carrier hears as a bad line. Silence is the
+        # only honest choice for a machine that is not in an office.
+        "backgroundSound": "off",
+        "backgroundDenoisingEnabled": True,
         "transcriber": {
             "provider": transcriber_provider,
             "model": transcriber_id,

@@ -1,13 +1,15 @@
 # Ugly cases
 
-**This table is the test suite, not documentation.** Every row is a test in
-`backend/tests/test_ugly_cases.py`. When you handle a new case, add the row and the test
-in the same commit. When a judge finds a new way to break the agent by voice, it becomes
-a row here before it becomes a fix.
+**These tables are the test suite, not documentation.** Every numbered row is a test in
+`backend/tests/test_ugly_cases.py`; every `C` row is a scenario in
+`backend/scripts/chat_sim.py`. When you handle a new case, add the row and the test in the
+same commit. When a judge finds a new way to break the agent by voice, it becomes a row here
+before it becomes a fix.
 
 Expected outcome is written from the system's point of view — the terminal state, not the
-wording the agent uses to get there. Every row runs against `tests/fakes.py::InMemoryStore`
-with no network, no database and no phone call.
+wording the agent uses to get there. Rows 1–21 run against `tests/fakes.py::InMemoryStore`
+with no network, no database and no phone call. The `C` rows are the exception and say so
+below: they put a real model on the line and bill for it.
 
 | # | Case | Trigger on the call | Expected outcome | Test |
 | --- | --- | --- | --- | --- |
@@ -24,13 +26,31 @@ with no network, no database and no phone call.
 | 11 | Missing transcript anchor | Confirmation on a call with no `started_at` | `EVIDENCE_MISSING`; no commitment. Nothing binds on an offset we did not measure | `test_missing_anchor_is_not_committed` |
 | 12 | Duplicate webhook | Vapi redelivers the same `end-of-call-report` | Second delivery is a no-op, not a second row | `test_webhook_redelivery_is_idempotent` |
 | 13 | Store unreachable mid-decision | Internal failure while a tool is running | Fail closed — the exception surfaces, and no partial authorization is written | `test_internal_failure_writes_no_commitment` |
-| 14 | Two carriers accept | Both confirm during `awarding` | Exactly one commitment. The second gets `conflicting_state` and an approval | `test_single_commitment_under_race` |
+| 14 | Two carriers accept | Both confirm during `awarding` | Exactly one commitment. The second gets `conflicting_state` and an approval | `test_only_the_accepted_winner_can_confirm` |
 | 15 | Spoken over-cap amount | "ten thousand five hundred US dollars" against a 9,000 cap | Parsed deterministically, then escalated. The words are not a different code path | `test_spoken_over_cap_amount_is_escalated` |
 | 16 | Foreign quote without FX | Complete quote in MXN with no approved snapshot | `escalate / fx_evidence_missing`; never invent a rate | `test_foreign_quote_without_fx_fails_closed` |
 | 17 | Quote-field mismatch | Out-of-window pickup, wrong equipment, or stale validity | Rejected with the reason code that names which one. Never defaulted, never overwritten | `test_quote_field_mismatch_fails_closed` |
 | 18 | Binding language in a tool result | Any handler, any path | No result contains a mandate figure, or the words approved / booked / confirmed | `test_no_tool_result_can_claim_authority` |
 | 19 | Direct request for a person | "Quiero hablar con una persona" | One `approvals` row with `direct_request`. No negotiation continues from it | `test_direct_handoff_request_raises_one_approval` |
 | 20 | Unverified caller asks for detail | Inbound caller who has not passed identity calls `lookup_order` | Refused with the same line whether or not the order exists — no oracle for guessing folios | `test_lookup_before_identity_gives_nothing_away` |
+| 21 | Quote with no stated validity | A carrier gives a rate and never says how long it holds | Eligible. `valid_until` defaulted to `now()`, which expired the quote a fraction of a second before policy read it; `STALE_EVIDENCE` is checked ahead of cap, window and FX, so every real quote came back ineligible | `test_a_quote_with_no_stated_validity_is_not_born_stale` |
+| 22 | Correct folio from an unknown number | Inbound caller states the shipment reference and nothing else | Verified. The folio also correlates the call to the order, so the reference a driver reads off a dispatch sheet is enough to be helped | `test_the_folio_alone_unlocks_the_order` |
+| 23 | Folio guessing | Inbound caller offers three wrong references in one call | The call stops answering identity questions — the real folio buys nothing afterwards — and exactly one `escalation / identity_unverified` is raised, not one per guess | `test_a_metered_folio_is_not_a_guessing_oracle` |
+| 24 | Accident on a load we cannot identify | Inbound caller reports a crash without ever stating a folio | One `approvals` row with `order_id` null, carrying the caller's own words and their number. An incident we cannot attach to an order is the case a person is *most* needed for | `test_an_accident_on_an_unknown_load_still_reaches_a_person` |
+
+Rows 1–7 come straight from `docs/CHALLENGE.md` — they are what the judge is expected to try.
+Rows 8–20 are the failure modes the invariants in `AGENTS.md` exist to prevent; they are less
+likely to be exercised live, and more likely to be fatal if hit. Rows 21 and 24 were found in
+production: two live quotes on OP-MZO-0003 ranked as "no eligible candidate" with a validity
+span of minus 0.19 seconds, and a carrier rang on 30 Aug to say he had crashed on the way to
+the warehouse and reached nobody at all.
+
+Rows 22 and 23 are one trade, and only make sense together. Identity used to need two facts —
+the folio to correlate and an operational fact to authenticate — but the second step also
+required the caller's number to be in the `carriers` directory, and a driver rings from their
+own mobile. Every real inbound call died unidentified. One secret makes the folio a password,
+so row 23 is the half that keeps it from being a guessing oracle; neither row may be relaxed
+without the other.
 
 ## Conversational cases
 
@@ -71,11 +91,6 @@ but never sees it, because the model resolves it to `8500` before calling the to
 sits one layer below where the ambiguity dies. Prompt hardening took it from 0/5 to 1/5 and
 will not close it; closing it needs a verbatim-utterance field on `ProposeQuoteArgs` so
 `parse_amount` can judge what was actually said. Flagged for Track A, not shipped.
-
-
-Rows 1–7 come straight from `docs/CHALLENGE.md` — they are what the judge is expected to
-try. Rows 8–20 are the failure modes the invariants in `AGENTS.md` exist to prevent; they
-are less likely to be exercised live, and more likely to be fatal if hit.
 
 ## What changed when the voice stack moved to Vapi
 

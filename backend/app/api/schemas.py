@@ -53,9 +53,16 @@ __all__ = [
 
 
 class NewOrderRequest(BaseModel):
-    """A cargo was received at port. Idempotent on ``reference``."""
+    """A cargo was received at port. Idempotent on ``reference`` when one is supplied.
 
-    reference: str = Field(min_length=1)
+    ``reference`` is optional because the folio is now the caller's identity proof on an
+    inbound call, and "whoever typed it picked a fresh one" is the wrong guarantee to rest
+    that on. Omit it and the sequence in migration 0005 allocates the next one. Supplying one
+    is still supported, so an intake that arrives from an existing system keeps its own folio
+    and stays idempotent on it.
+    """
+
+    reference: str | None = Field(default=None, min_length=1)
     origin: str | None = None
     destination: str | None = None
     cargo: str | None = None
@@ -235,6 +242,11 @@ class OrderAggregate(BaseModel):
     calls: list[CallRecord]
     commitment: Commitment | None
     approvals: list[Approval]
+    #: The carrier this order was awarded to, once there is one. Quotes and calls carry a
+    #: ``carrier_id`` and nothing else, so every screen that wanted to say *who* had the load
+    #: could only show a UUID -- including the one a person reads when an inbound caller rings
+    #: in about a booked shipment.
+    assigned_carrier: Carrier | None = None
 
 
 class CallDetail(BaseModel):

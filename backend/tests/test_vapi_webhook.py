@@ -31,6 +31,7 @@ from app.domain import (
     CallStatus,
     Carrier,
     CompanyProfile,
+    Severity,
     Store,
     Turn,
 )
@@ -362,6 +363,71 @@ async def test_a_failing_report_model_keeps_the_transcript_it_already_stored() -
     assert body == {"received": True, "reported": False}
     assert len(ledger.finalized) == 1, "the call row was still written"
     assert store.reports == {}
+
+
+async def test_a_failing_report_model_still_reaches_a_person() -> None:
+    """The notification used to be a hostage of the extraction model.
+
+    A raised ``reporter.report`` returned early, so ``after_report`` never ran. On 30 Aug that
+    was every call -- ``call_reports`` held zero rows across twenty-three of them -- and a
+    carrier who rang to say he had crashed reached nobody. Fail-closed means a person is told
+    *more* readily when we know less, not less readily.
+    """
+
+    class BrokenReporter(ScriptedReportModel):
+        async def report(self, call_id: str, turns: list[Turn], context: CallContext) -> CallReport:
+            raise RuntimeError("the extraction model is down")
+
+    store = InMemoryStore()
+    ledger = RecordingLedger(store)
+    received: list[CallReport] = []
+
+    async def after_report(call: CallRecord, report: CallReport) -> None:
+        received.append(report)
+
+    code, body = await _post(
+        _fixture("end_of_call_report.json"),
+        store,
+        ledger,
+        reporter=BrokenReporter(),
+        after_report=after_report,
+    )
+
+    assert code == 200
+    assert body["reported"] is False, "we do not claim a brief we could not extract"
+    assert body["notified"] is True
+    assert len(received) == 1
+    assert received[0].severity is Severity.HIGH, "not knowing what was said is not reassuring"
+    assert "Automatic brief unavailable" in received[0].summary
+
+
+async def test_an_inbound_call_records_who_rang_and_who_they_rang() -> None:
+    """Vapi describes both legs from its own side: ``customer`` is always the far end.
+
+    Reading ``customer.number`` into ``to_number`` therefore wrote the caller into both
+    columns on an inbound call, so every inbound row claimed we had rung the person who rang
+    us -- and the number an operator would call back was indistinguishable from our own.
+    """
+    store = InMemoryStore()
+    ledger = RecordingLedger(store)
+    payload = {
+        "message": {
+            "type": "status-update",
+            "status": "in-progress",
+            "call": {
+                "id": "vapi-inbound-1",
+                "type": "inboundPhoneCall",
+                "customer": {"number": "+573214948450"},
+                "phoneNumber": {"number": "+16166122459"},
+            },
+        }
+    }
+
+    await _post(payload, store, ledger)
+
+    record = ledger.upserts[-1]
+    assert record.from_number == "+573214948450", "the caller"
+    assert record.to_number == "+16166122459", "our number"
 
 
 # ------------------------------------------------------------------------ assistant-request

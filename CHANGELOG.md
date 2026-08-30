@@ -16,6 +16,113 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T08:44-0500 · tools, vapi, agent, api, frontend · nacho
+
+**`main` did not import.** The 30 Aug merge resolved a conflict in `market.py::_context_for`
+by keeping both sides, so `CallContext(...)` was called with `pickup_window` twice — a
+`SyntaxError`, meaning `app.main` could not be imported at all. Kept the shared
+`domain.spoken_window`; the losing copy was a local duplicate that rendered a same-day window
+as "between September 2 and September 2". Nothing else in the file was touched.
+
+**The inbound leg answered the phone and recorded almost nothing.** Evidence from the live
+project: zero rows in `commitments`, `notifications` and `call_reports` across twenty-three
+calls. Four independent causes, all fixed:
+
+- `verify_caller` refused to authenticate on a folio, and the fact that *would* authenticate
+  needed the caller's number in the `carriers` directory — which a driver on their own mobile
+  never has. Any matched fact now verifies, metered at three wrong answers before the call
+  stops answering and raises one `identity_unverified` escalation. The folio lookup also tries
+  case and separator variants, because `order_by_reference` is an exact match and a
+  transcriber writes "op 1042".
+- `report_incident` raised its approval inside `if order is not None`. A carrier rang to say
+  he had crashed on the way to the warehouse, never stated a folio, and reached nobody. The
+  approval is now raised either way, with `order_id` null.
+- A raised `reporter.report` returned early, so `after_report` never ran and no manager was
+  ever notified. The brief now degrades to a stub built from the caller's own words, marked
+  `HIGH`, and the notification goes out regardless. (The extraction model works locally, so
+  the live failure is almost certainly `OPENAI_API_KEY` unset on Render — `ENVIRONMENT=demo`
+  means `production_errors()` never checks it.)
+- Inbound `to_number` was written from `customer.number`, which is the *caller* on an inbound
+  leg — so both columns held the same number and the callback number was indistinguishable
+  from our own.
+
+**Audio.** `backgroundSound` and `backgroundDenoisingEnabled` were never sent, so both took
+whatever the Vapi account default was; the default `backgroundSound` is an ambient office
+loop. Both are now stated. `stopSpeakingPlan` is phase-aware: the award recap keeps
+`numWords: 0` because an objection mid-read-back must be heard immediately, and everything
+else waits for two words — `numWords: 0` yields on 100ms of anything voice-shaped, which is
+why the 30 Aug inbound call from a moving truck has the agent cut dead after "Thank you for".
+Inbound and outbound assistant payloads were verified byte-identical against the Vapi API
+first, so this is not a divergence between the two legs.
+
+**The folio is allocated, and intake is reachable.** Migration `0005` adds a sequence and
+`next_order_reference(prefix)`; `POST /api/orders` accepts no reference and returns the
+allocated one. `POST /api/orders/{id}/intake` has existed since `0004` but nothing in the
+portal called it, and `next_action` offered "Grant a mandate" on an unreleased order — the one
+action the mandate endpoint refuses with a 409. There is now an intake stage and an
+`IntakePanel`.
+
+`createOrder` reached `api.ts` without a caller, so orders were still being POSTed by hand
+from a script. **Operations has a "Receive a container" button.** No folio field -- the
+sequence allocates it. No clock either, because that is what intake confirms and asking twice
+would make the gate look like a formality. Equipment is a closed list rather than a text box:
+`Order.mandate()` builds `allowed_equipment` as `frozenset({self.equipment})` and
+`evaluate_quote` refuses anything outside it, so a typed "40ft chassis" would have every quote
+on the operation rejected for an equipment mismatch nobody could see. Nothing asked for
+equipment before this -- not even `IntakePanel`, though `ConfirmIntakeRequest` accepts it --
+and an order without it can never be granted a mandate at all.
+
+**Portal.** Inbound calls sit in the order's own call list beside the outbound ones, with the
+caller's number, identity level and a marker when an approval points at them — no separate
+inbound screen, because an inbound call is an event on a case. Escalation and incident
+approval cards render their full context instead of two humanised words, and link to the
+transcript; a `#/calls/:id` route exists so an approval with no order still opens its call.
+`OrderAggregate` gained `assigned_carrier` so the commitment card can name who holds the load.
+The folio has a copy button.
+
+Also: `RECORDING_ENABLED=true` locally with a consent notice. It gates `confirm_preagreement`,
+so with it off no commitment could open and no order could reach `booked` — the whole award
+chain was unreachable. `.env.example` keeps `false` as the safe default.
+
+**`UGLY_CASES.md` had drifted from the suite it claims to be.** Row 14 named
+`test_single_commitment_under_race`, which exists nowhere in `tests/`; it is
+`test_only_the_accepted_winner_can_confirm`. The born-stale quote fix (`fd2fbbb`) shipped its
+test without the row the document's own first paragraph requires, so it is now row 21 -- the
+only row here found in production rather than reasoned about. The preamble promised "no
+network, no database and no phone call" for every row, which is false for the `C` rows: they
+put a real model on the line and bill for it. Every row reference now resolves, checked
+mechanically.
+
+402 passed / 16 skipped, `ruff check` and `mypy` clean, frontend builds, `oxlint` clean.
+
+Affects: **everyone.** `main` was unbuildable; pull before you do anything else. Track A: the
+identity ladder changed shape — read `UGLY_CASES.md` rows 22-24, and note that rows 22 and 23
+are one trade and neither may be relaxed alone. Track B: `build_assistant` now varies the
+stop-speaking plan by phase. Track C: `OrderAggregate` has a new field and `NewOrderRequest`
+made `reference` optional; migration 0005 must be pushed before `POST /api/orders` without a
+reference will work.
+
+---
+
+## 2026-08-30T08:17-0500 · domain/ports, tools, vapi · nacho
+
+**`Store` gains two reads: `events_for_call` and `next_reference`.** Both already existed on
+`SupabaseStore`; neither was on the Protocol, so nothing outside `store/` could call them.
+
+`events_for_call(call_id)` is how `verify_caller` meters wrong identity answers. Counting from
+the append-only log rather than a column means a redelivered tool call cannot inflate the
+count -- `append_event` is keyed -- and there is no counter to drift from the events it
+describes.
+
+`next_reference(prefix)` allocates the next order folio from a Postgres sequence. `reference`
+was `not null` with no generator anywhere: it arrived from the `POST /api/orders` body, and
+`frontend/src/api.ts` had no `createOrder` at all, so in practice every folio was typed by
+hand. It is now the caller's identity proof on an inbound call, which makes "somebody
+remembered to type a unique one" the wrong guarantee.
+
+Affects: **anyone implementing `Store`.** `tests/fakes.py::InMemoryStore` implements both.
+If you have a second fake, add them or it will no longer satisfy `Store`.
+
 ## 2026-08-30T06:18-0500 · api, frontend · nacho
 
 **The operator could not say when.** The mandate form asked for a ceiling and a currency and

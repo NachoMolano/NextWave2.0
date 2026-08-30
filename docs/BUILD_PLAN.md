@@ -426,10 +426,23 @@ with `superseded_by` pointing at the old one. The old one is never edited.
    claim as unverified, and escalates. If it resolves, the context carries `expected_driver` /
    `expected_plate` / `reference`, which the prompt already forbids reading out: *"a caller who
    is told the plate can repeat the plate."*
-4. **Identity.** The agent asks for a name, a company, and one operational fact. Each attempt
-   goes through `verify_caller`, which compares server-side and returns only match / no match,
-   setting `calls.identity_verified` and `identity_level`. `lookup_order` returns nothing until
-   that flips. Identity is a datum that can only *demand more*, never concede more.
+4. **Identity.** The agent asks for a name, a company, and the **shipment reference** — the
+   folio on the caller's dispatch paperwork. Each attempt goes through `verify_caller`, which
+   compares server-side and returns only match / no match, setting `calls.identity_verified`
+   and `identity_level`. `lookup_order` returns nothing until that flips. Identity is a datum
+   that can only *demand more*, never concede more.
+
+   **Changed 30 Aug.** This was two factors: the folio correlated the call and a second
+   operational fact authenticated it. But reaching level 2 also required `call.carrier_id`,
+   i.e. the caller's number already in the `carriers` directory — and a driver rings from
+   their own mobile, so no real inbound call could ever verify. Every one of them died
+   unidentified. A matched fact of any kind now verifies.
+
+   That makes the folio a password, so the second factor is replaced by a metered one:
+   `_IDENTITY_ATTEMPT_BUDGET` wrong answers (3) and the call stops answering identity
+   questions entirely, raising one `escalation / identity_unverified`. The budget is counted
+   from `identity.attempt` events rather than a column, so a redelivered tool call cannot
+   inflate it. `UGLY_CASES.md` rows 22 and 23 are the pair; neither may be relaxed alone.
 5. **Subject.** The agent calls `report_incident` with `subject ∈ accident | delay | request |
    delivered | other`, the details, and any new ETA as an explicit clock time and calendar date
    (never a weekday, never an inferred number). The server writes `events` and moves
@@ -442,6 +455,20 @@ with `superseded_by` pointing at the old one. The old one is never edited.
    High severity, an unverified caller, or a direct request for a person creates
    `approvals(kind=incident|escalation)`, and `notify/` sends the manager the report by email
    and WhatsApp. The portal shows the verified summary with the recording and the anchors.
+
+   Two things this depended on that it must not. The approval used to be raised only when the
+   call had correlated to an order, so an incident on an unknown load reached nobody — it is
+   now raised either way, with `order_id` null. And the notification used to be a hostage of
+   the extraction model: a raised `reporter.report` returned early and `after_report` never
+   ran, which on 30 Aug was every call. The brief now degrades to a stub built from the
+   caller's own words, marked `HIGH`, and the manager is still told. Not knowing what was said
+   is a reason to escalate faster, not slower.
+
+   **Where it surfaces.** Inbound calls appear in the order's own call list beside the
+   outbound ones, from the moment the folio correlates them; there is no separate inbound
+   screen, because an inbound call is an event on a case. A call that never correlated is
+   reachable only through its approval card in the Approvals inbox, which is why that card
+   renders the full `approval.context` and links to the transcript.
 
 ### Flow C — OUTBOUND 2: the deadline passed
 

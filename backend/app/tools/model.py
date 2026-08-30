@@ -179,6 +179,8 @@ RESPONSES: dict[str, str] = {
     "identity_match": "matches",
     "identity_no_match": "does not match",
     "identity_required": "I need to verify who I am speaking with first.",
+    "identity_exhausted": "I cannot verify that on this call, so I will pass it to a person "
+    "from the team.",
     "incident_recorded": "Recorded. I cannot approve that on this call.",
     "no_order": "I do not have that operation on this call; a person from the team will follow up.",
     "internal_error": "I cannot complete that right now, so I will pass it to a person from "
@@ -191,6 +193,13 @@ FORBIDDEN_IN_RESULTS = ("approved", "booked", "confirmed", "agreed to", "we have
 
 #: How long a rate holds when the carrier did not say. See the note in ``propose_quote``.
 _UNSTATED_VALIDITY = timedelta(hours=2)
+
+#: Wrong identity facts a caller may offer before the call stops answering.
+#:
+#: The folio verifies on its own (see ``verify_caller``), which makes it a password, and an
+#: unmetered password check is a guessing oracle. Three is enough for a driver reading a
+#: creased dispatch sheet in a cab and far too few to walk a keyspace.
+_IDENTITY_ATTEMPT_BUDGET = 3
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -223,6 +232,36 @@ def _normalize(value: str) -> str:
     plate. Case, spacing and punctuation are transcription artefacts, not differences.
     """
     return _NON_ALNUM.sub("", value.strip().casefold())
+
+
+#: Splits a folio a transcriber ran together: "OP1042" -> "OP", "1042".
+_LETTERS_THEN_DIGITS = re.compile(r"^([A-Z]+)([0-9].*)$")
+
+
+def _reference_candidates(spoken: str) -> list[str]:
+    """The spellings of one folio worth looking up, most literal first.
+
+    ``order_by_reference`` is an exact match on a column, so ``_normalize`` never gets to see
+    a folio that failed to load -- and a caller does not say "hyphen". Deepgram returns
+    "OP 1042" or "op1042" for the same four syllables, and all three used to miss. That was
+    survivable while the folio only correlated the call; now that it is the whole identity
+    check, a lost folio is a legitimate carrier who cannot be verified at all.
+
+    Only case and separators are guessed at. Nothing here invents a character.
+    """
+    raw = spoken.strip()
+    upper = raw.upper()
+    candidates = [raw, upper]
+    squashed = _NON_ALNUM.sub("", upper.casefold()).upper()
+    split = _LETTERS_THEN_DIGITS.match(squashed)
+    if split:
+        candidates.append(f"{split.group(1)}-{split.group(2)}")
+    candidates.append(squashed)
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
 
 
 def _digest(name: str, call_id: str, args: BaseModel) -> str:
@@ -650,11 +689,19 @@ class ModelTools:
         if call is None:
             return RESPONSES["identity_no_match"]
 
+        if call.identity_verified is False and await self._identity_budget_spent(call_id):
+            # Already escalated on a previous attempt. Answering again would hand back the
+            # one bit -- match or no match -- that the budget exists to stop metering out.
+            return RESPONSES["identity_exhausted"]
+
         order = await self._store.order(call.order_id) if call.order_id else None
         if order is None and args.fact_kind == "reference":
             # The one correlation path: an inbound call reaches its order by the caller
             # producing the folio, never by us reading one out.
-            order = await self._store.order_by_reference(args.fact_value.strip())
+            for candidate in _reference_candidates(args.fact_value):
+                order = await self._store.order_by_reference(candidate)
+                if order is not None:
+                    break
 
         expected = self._expected_fact(order, args.fact_kind) if order else None
         matched = expected is not None and _normalize(expected) == _normalize(args.fact_value)
@@ -676,17 +723,21 @@ class ModelTools:
         if not matched:
             # No hint about which part was wrong, and never the expected value. A caller who
             # is told the plate can repeat the plate, which verifies nothing.
+            if first_attempt and await self._identity_budget_spent(call_id):
+                await self._escalate_identity(call, args)
+                return RESPONSES["identity_exhausted"]
             return RESPONSES["identity_no_match"]
 
         if not first_attempt:
             return RESPONSES["identity_match"]
 
-        # A reference correlates the order but does not authenticate the caller. Level 1
-        # comes only from trusted directory phone matching; one independent operational
-        # fact then reaches level 2. Level 3 is reserved for a future stronger mechanism.
-        level = call.identity_level
-        if args.fact_kind != "reference" and call.carrier_id and level >= 1:
-            level = 2
+        # Any matched fact authenticates. The folio was two-factor until 30 Aug -- it
+        # correlated the order and a second operational fact was needed to authenticate --
+        # but that required the caller's phone to be in the directory, so a driver on their
+        # own mobile could never verify at all and every inbound call died unidentified.
+        # The factor that replaces the second one is _IDENTITY_ATTEMPT_BUDGET: one secret,
+        # metered, instead of two secrets nobody could produce.
+        level = max(call.identity_level, 2)
         await self._store.upsert_call(
             call.model_copy(
                 update={
@@ -694,11 +745,47 @@ class ModelTools:
                     "identity_level": level,
                     # Identity may only ever demand more, so this flips up and nothing in
                     # a conversation flips it back down.
-                    "identity_verified": call.identity_verified or level >= 2,
+                    "identity_verified": True,
                 }
             )
         )
         return RESPONSES["identity_match"]
+
+    async def _identity_budget_spent(self, call_id: str) -> bool:
+        """Have this call's wrong answers reached the budget?
+
+        Counted from the append-only event log rather than a column: the events are already
+        written for the audit, a redelivered tool call cannot inflate the count because
+        ``append_event`` is keyed, and there is no counter to get out of step with them.
+        """
+        events = await self._store.events_for_call(call_id)
+        wrong = sum(
+            1
+            for event in events
+            if event.type == "identity.attempt" and not event.payload.get("matched")
+        )
+        return wrong >= _IDENTITY_ATTEMPT_BUDGET
+
+    async def _escalate_identity(self, call: CallRecord, args: VerifyCallerArgs) -> None:
+        await self._store.raise_approval(
+            Approval(
+                order_id=call.order_id,
+                call_id=call.id,
+                kind=ApprovalKind.ESCALATION,
+                reason=ApprovalReason.IDENTITY_UNVERIFIED,
+                context={
+                    "detail": (
+                        f"{_IDENTITY_ATTEMPT_BUDGET} identity facts did not match; "
+                        "the call stopped answering"
+                    ),
+                    "fact_kind": args.fact_kind,
+                    "claimed_name": args.claimed_name or "",
+                    "claimed_company": args.claimed_company or "",
+                    "from_number": call.from_number or "",
+                },
+                raised_at=self._now(),
+            )
+        )
 
     @staticmethod
     def _expected_fact(order: Order, fact_kind: str) -> str | None:
@@ -780,32 +867,48 @@ class ModelTools:
             )
         )
 
-        if order is not None:
-            target = _INCIDENT_TRANSITIONS[args.subject]
-            if args.load_at_risk:
-                target = OrderStatus.AT_RISK
-            if target is not None and order.status not in (target, OrderStatus.CLOSED):
-                await self._store.set_order_status(order.id, target)
+        # A status move needs an order to move. Only this part is conditional.
+        target = _INCIDENT_TRANSITIONS[args.subject]
+        if args.load_at_risk:
+            target = OrderStatus.AT_RISK
+        if (
+            order is not None
+            and target is not None
+            and order.status
+            not in (
+                target,
+                OrderStatus.CLOSED,
+            )
+        ):
+            await self._store.set_order_status(order.id, target)
 
-            # Everything the whitelist does not move goes to a person. A claimed "delivered"
-            # is the sharp one: closing an order on a caller's word is how a load is written
-            # off while it is still on a truck.
-            if target is None or severity is Severity.HIGH or not call.identity_verified:
-                await self._store.raise_approval(
-                    Approval(
-                        order_id=order.id,
-                        call_id=call_id,
-                        kind=ApprovalKind.INCIDENT,
-                        reason=self._incident_reason(args, call),
-                        context={
-                            "subject": args.subject.value,
-                            "detail": args.detail,
-                            "new_eta": eta.isoformat() if eta else "",
-                            "identity_verified": call.identity_verified,
-                        },
-                        raised_at=self._now(),
-                    )
+        # Everything the whitelist does not move goes to a person. A claimed "delivered" is
+        # the sharp one: closing an order on a caller's word is how a load is written off
+        # while it is still on a truck.
+        #
+        # Raised whether or not we know which order this is. It sat inside the `order is not
+        # None` branch until 30 Aug, and an inbound call is uncorrelated until the caller
+        # states the folio -- so the one caller who rang to say he had crashed on the way to
+        # the warehouse escalated to nobody at all. An incident with no order is exactly the
+        # case a person is needed for.
+        if target is None or severity is Severity.HIGH or not call.identity_verified:
+            await self._store.raise_approval(
+                Approval(
+                    order_id=order.id if order is not None else None,
+                    call_id=call_id,
+                    kind=ApprovalKind.INCIDENT,
+                    reason=self._incident_reason(args, call),
+                    context={
+                        "subject": args.subject.value,
+                        "detail": args.detail,
+                        "new_eta": eta.isoformat() if eta else "",
+                        "identity_verified": call.identity_verified,
+                        "from_number": call.from_number or "",
+                        "order_known": order is not None,
+                    },
+                    raised_at=self._now(),
                 )
+            )
         return RESPONSES["incident_recorded"]
 
     @staticmethod

@@ -117,6 +117,22 @@ def next_action(
             urgency="now",
         )
 
+    # Before the mandate, because the mandate endpoint refuses an unreleased order with a
+    # 409. Without this branch the screen offered the one action it knew would be rejected,
+    # and the operator had no way to reach the act that unblocks it.
+    if not order.is_released and order.status is OrderStatus.RECEIVED:
+        return NextAction(
+            stage=STAGES[0],
+            stage_index=0,
+            label="Confirm intake",
+            detail=(
+                "Nobody has confirmed this container is released. No mandate may be granted "
+                "and no carrier may be dialled until someone does."
+            ),
+            actor="operator",
+            urgency=_urgency_floor(order, today, "now"),
+        )
+
     if order.status is OrderStatus.RECEIVED and not order.has_mandate:
         return NextAction(
             stage=STAGES[1],

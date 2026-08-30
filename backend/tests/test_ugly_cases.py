@@ -697,6 +697,38 @@ async def test_a_repeated_handoff_request_does_not_stack_approvals() -> None:
     assert len(world.store.approvals) == 1
 
 
+async def test_an_accident_on_an_unknown_load_still_reaches_a_person() -> None:
+    """The 30 Aug call, as a test.
+
+    A carrier rang and said he had crashed on the way to the warehouse. He never stated a
+    folio, so the call was uncorrelated, and ``report_incident`` raised its approval inside
+    ``if order is not None`` -- so the report went into ``events`` and no further. Nobody was
+    told. An incident we cannot attach to an order is the case a person is *most* needed for,
+    not least: it is the one nothing downstream can act on automatically.
+    """
+    world = World()
+    call_id = await world.call(
+        "vapi-in", phase="inbound", direction=CallDirection.INBOUND, order_id=None
+    )
+
+    result = await world.tools.report_incident(
+        call_id,
+        ReportIncidentArgs(
+            subject=IncidentSubject.ACCIDENT,
+            detail="carrying textiles to your warehouse, I have had an accident",
+            load_at_risk=True,
+        ),
+    )
+
+    assert result == RESPONSES["incident_recorded"]
+    approvals = list(world.store.approvals.values())
+    assert len(approvals) == 1, "an unknown order is not a reason to tell nobody"
+    assert approvals[0].kind is ApprovalKind.INCIDENT
+    assert approvals[0].order_id is None
+    assert approvals[0].context["order_known"] is False
+    assert approvals[0].context["detail"], "the human inbox needs the words he actually said"
+
+
 # --------------------------------------------------------------------------------- row 20
 
 
@@ -758,8 +790,14 @@ async def test_verification_never_echoes_the_expected_value() -> None:
     assert "JKL" not in wrong
 
 
-async def test_two_matched_facts_unlock_the_order() -> None:
-    """The path a legitimate caller actually walks: folio, then plate, then details."""
+async def test_the_folio_alone_unlocks_the_order() -> None:
+    """The path a legitimate caller actually walks: folio, then details.
+
+    This wanted two facts until 30 Aug -- the folio to correlate, then an operational fact
+    to authenticate -- but the second step also required the caller's number to be in the
+    ``carriers`` directory, and a driver rings from their own mobile. Every real inbound
+    call died unidentified. One secret plus a metered attempt budget is the trade.
+    """
     world = World()
     call_id = await world.call(
         "vapi-in", phase="inbound", direction=CallDirection.INBOUND, order_id=None
@@ -767,13 +805,7 @@ async def test_two_matched_facts_unlock_the_order() -> None:
 
     assert (
         await world.tools.verify_caller(
-            call_id, VerifyCallerArgs(fact_kind="reference", fact_value="OP-1042")
-        )
-        == RESPONSES["identity_match"]
-    )
-    assert (
-        await world.tools.verify_caller(
-            call_id, VerifyCallerArgs(fact_kind="plate", fact_value="jkl 123")
+            call_id, VerifyCallerArgs(fact_kind="reference", fact_value="op 1042")
         )
         == RESPONSES["identity_match"]
     ), "normalised: punctuation and case are transcription artefacts, not differences"
@@ -783,6 +815,40 @@ async def test_two_matched_facts_unlock_the_order() -> None:
     assert "OP-1042" in detail
     call = await world.store.call(call_id)
     assert call is not None and call.identity_verified is True
+    assert call.order_id is not None, "a verified folio is also the correlation"
+
+
+async def test_a_metered_folio_is_not_a_guessing_oracle() -> None:
+    """The folio verifies on its own, which makes it a password. Passwords get a budget.
+
+    Without one, ``verify_caller`` answers match/no-match for as long as a stranger keeps
+    talking, and the keyspace is four digits. The budget is what replaces the second factor,
+    so it is the load-bearing half of that trade -- and the refusal after it is spent must
+    not distinguish a near miss from nonsense.
+    """
+    world = World()
+    call_id = await world.call(
+        "vapi-in", phase="inbound", direction=CallDirection.INBOUND, order_id=None
+    )
+
+    for guess in ("OP-1000", "OP-1001", "OP-1002"):
+        await world.tools.verify_caller(
+            call_id, VerifyCallerArgs(fact_kind="reference", fact_value=guess)
+        )
+
+    burned = await world.tools.verify_caller(
+        call_id, VerifyCallerArgs(fact_kind="reference", fact_value="OP-1042")
+    )
+
+    assert burned == RESPONSES["identity_exhausted"], "the real folio buys nothing now"
+    call = await world.store.call(call_id)
+    assert call is not None and call.identity_verified is False
+    escalations = [
+        approval
+        for approval in world.store.approvals.values()
+        if approval.reason is ApprovalReason.IDENTITY_UNVERIFIED
+    ]
+    assert len(escalations) == 1, "a person is told once, not once per guess"
 
 
 async def test_a_quote_with_no_stated_validity_is_not_born_stale() -> None:

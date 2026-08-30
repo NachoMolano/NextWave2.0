@@ -520,7 +520,7 @@ class SupabaseStore:
         return [DecisionRow.model_validate(r) for r in _rows(res)]
 
     async def events_for_call(self, call_id: str) -> list[EventRow]:
-        """Not on the Protocol. The ledger entries one call produced, oldest first."""
+        """The ledger entries one call produced, oldest first."""
         with _translate():
             res = (
                 await self._db.table("events")
@@ -853,6 +853,20 @@ class SupabaseStore:
         if row is None:
             raise StoreError("upsert into orders returned no row")
         return str(row["id"])
+
+    async def next_reference(self, prefix: str) -> str:
+        """Allocate the next order folio from the sequence in migration 0005.
+
+        An RPC rather than a column default because the caller needs the folio in the same
+        round trip that reserves it -- the intake screen has to show the operator what to
+        read to the carrier, and a default only surfaces on the way back from the insert.
+        """
+        with _translate():
+            res = await self._db.rpc("next_order_reference", {"prefix": prefix}).execute()
+        reference = getattr(res, "data", None)
+        if not isinstance(reference, str) or not reference.strip():
+            raise StoreError("next_order_reference returned no folio")
+        return reference
 
     async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool:
         """Atomically replace an order only while its mandate version is still current."""

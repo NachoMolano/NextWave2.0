@@ -144,6 +144,10 @@ export interface Order {
   expected_driver: string | null
   expected_plate: string | null
   payload: Record<string, unknown>
+  /** Null until a person confirms the container may move. Blocks the mandate and the dialler. */
+  released_at: string | null
+  released_by: string | null
+  release_note: string | null
 }
 
 /** A changed quote is a new row, never an edit. `superseded_by` is how they chain. */
@@ -284,6 +288,8 @@ export interface OrderAggregate {
   calls: CallRecord[]
   commitment: Commitment | null
   approvals: Approval[]
+  /** The carrier holding the load, once one has been awarded. Null before that. */
+  assigned_carrier: Carrier | null
 }
 
 /** Keeps the losers and their reason codes. A comparison naming only the winner is not auditable. */
@@ -323,6 +329,35 @@ export interface SetMandateRequest {
   delivery_deadline: string | null
   commitment_mode: CommitmentMode
   expected_version: number
+}
+
+/**
+ * An order arrived. `reference` is optional: omit it and the backend allocates the folio
+ * from a sequence, which is what the inbound caller later reads back to prove who they are.
+ */
+export interface NewOrderRequest {
+  reference?: string
+  origin?: string | null
+  destination?: string | null
+  cargo?: string | null
+  equipment?: string | null
+  weight?: string | null
+  container_number?: string | null
+  free_days?: number | null
+  last_free_day?: string | null
+  delivery_deadline?: string | null
+}
+
+/** Stage 1. `released` is the gate; everything else is a gap intake exists to close. */
+export interface ConfirmIntakeRequest {
+  released: boolean
+  note?: string | null
+  free_days?: number | null
+  last_free_day?: string | null
+  delivery_deadline?: string | null
+  weight?: string | null
+  container_number?: string | null
+  equipment?: string | null
 }
 
 export interface ApprovalDecisionRequest {

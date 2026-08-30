@@ -10,11 +10,14 @@ import type {
   Carrier,
   Commitment,
   Comparison,
+  ConfirmIntakeRequest,
   MandateView,
   Money,
+  Order,
   OrderAggregate,
   AnchoredNote,
   CallReport,
+  NewOrderRequest,
   NextAction,
   OrderSummary,
   QuoteRow,
@@ -30,7 +33,10 @@ import type {
 type Route =
   | { name: 'orders' }
   | { name: 'order'; orderId: string }
-  | { name: 'call'; orderId: string; callId: string }
+  // orderId is null for a call that never correlated to one -- an inbound caller who did
+  // not state a folio. That call still has a transcript, and the approvals inbox is the only
+  // place it can be reached from, so the route has to exist without an order.
+  | { name: 'call'; orderId: string | null; callId: string }
   | { name: 'approvals' }
   | { name: 'carriers' }
   | { name: 'profile' }
@@ -42,6 +48,7 @@ function parseRoute(): Route {
   if (parts[0] === 'orders' && parts[1] && parts[2] === 'calls' && parts[3]) {
     return { name: 'call', orderId: parts[1], callId: parts[3] }
   }
+  if (parts[0] === 'calls' && parts[1]) return { name: 'call', orderId: null, callId: parts[1] }
   if (parts[0] === 'orders' && parts[1]) return { name: 'order', orderId: parts[1] }
   if (parts[0] === 'approvals') return { name: 'approvals' }
   if (parts[0] === 'carriers') return { name: 'carriers' }
@@ -145,12 +152,20 @@ export default function App() {
         <p className="eyebrow sidebar-eyebrow">Drayage control</p>
         <nav className="navigation">
           <NavItem
-            active={route.name === 'orders' || route.name === 'order' || route.name === 'call'}
+            // A call reached from the inbox with no order behind it belongs to Approvals,
+            // not Operations -- that is the queue it came from and the one it goes back to.
+            active={
+              route.name === 'orders' ||
+              route.name === 'order' ||
+              (route.name === 'call' && route.orderId !== null)
+            }
             label="Operations"
             onClick={() => navigate('/')}
           />
           <NavItem
-            active={route.name === 'approvals'}
+            active={
+              route.name === 'approvals' || (route.name === 'call' && route.orderId === null)
+            }
             label="Approvals"
             onClick={() => navigate('/approvals')}
           />
@@ -200,10 +215,12 @@ export default function App() {
         {route.name === 'call' && (
           <CallEvidencePage
             callId={route.callId}
-            onBack={() => navigate(`/orders/${route.orderId}`)}
+            onBack={() =>
+              navigate(route.orderId ? `/orders/${route.orderId}` : '/approvals')
+            }
           />
         )}
-        {route.name === 'approvals' && <ApprovalsPage onOpen={(id) => navigate(`/orders/${id}`)} />}
+        {route.name === 'approvals' && <ApprovalsPage onOpenPath={navigate} />}
         {route.name === 'carriers' && <CarriersPage />}
         {route.name === 'profile' && <ProfilePage />}
         {route.name === 'debug' && <DebugPage />}
@@ -386,9 +403,196 @@ function NextActionPanel({ action, onAct }: { action: NextAction; onAct?: () => 
 
 /* -------------------------------------------------------------- the queue */
 
+/**
+ * Equipment is a closed list because policy compares it as an exact string.
+ *
+ * `Order.mandate()` builds `allowed_equipment` as `frozenset({self.equipment})`, and
+ * `evaluate_quote` refuses any proposal whose equipment is not in that set. A free-text box
+ * here would let somebody type "40ft chassis" and then watch every quote on the operation be
+ * rejected for an equipment mismatch nobody could see. The values are the ones already spoken
+ * elsewhere in the system.
+ */
+const EQUIPMENT_OPTIONS = ['40-foot container chassis', 'container chassis', 'chassis', 'reefer']
+
+/**
+ * Receiving a container: the arrival document, and nothing more.
+ *
+ * No folio field. The backend allocates it from the sequence in migration 0005, because the
+ * folio is what an inbound caller reads back to prove who they are and "whoever typed it
+ * picked a fresh one" is the wrong guarantee to rest an identity check on.
+ *
+ * No clock either. Discharge dates and free days are what `intake` exists to confirm, and
+ * asking for them twice would make the gate look like a formality.
+ */
+function ReceiveContainerDialog({
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  busy: boolean
+  onCancel: () => void
+  onSubmit: (body: NewOrderRequest) => void
+}) {
+  const [origin, setOrigin] = useState('')
+  const [destination, setDestination] = useState('')
+  const [equipment, setEquipment] = useState(EQUIPMENT_OPTIONS[0])
+  const [cargo, setCargo] = useState('')
+  const [containerNumber, setContainerNumber] = useState('')
+  const [weight, setWeight] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  const submit = () => {
+    // The API accepts an order with none of this. An operation with no lane cannot be quoted
+    // and one with no equipment can never be granted a mandate, so both are refused here
+    // rather than at the point, three screens later, where the reason is no longer visible.
+    if (!origin.trim() || !destination.trim()) {
+      return setProblem('A drayage leg needs both ends. Give an origin and a destination.')
+    }
+    if (!equipment) {
+      return setProblem('Equipment is what policy checks every quote against. Pick one.')
+    }
+    setProblem(null)
+    onSubmit({
+      origin: origin.trim(),
+      destination: destination.trim(),
+      equipment,
+      cargo: cargo.trim() || null,
+      container_number: containerNumber.trim() || null,
+      weight: weight.trim() || null,
+    })
+  }
+
+  return (
+    <div
+      className="dialog-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onCancel()
+      }}
+    >
+      <div className="dialog" role="dialog" aria-modal="true" aria-label="Receive a container">
+        <p className="eyebrow">Intake</p>
+        <h2>Receive a container</h2>
+        <p>
+          What the arrival document says. The folio is allocated for you, and the clock is
+          confirmed on the next screen &mdash; releasing a container is a person saying so.
+        </p>
+
+        <div className="dialog-form">
+          <div className="dialog-field">
+            <label className="eyebrow" htmlFor="new-origin">
+              Origin
+            </label>
+            <input
+              id="new-origin"
+              className="field"
+              autoFocus
+              placeholder="Contecon Manzanillo"
+              value={origin}
+              onChange={(e) => setOrigin(e.target.value)}
+            />
+          </div>
+
+          <div className="dialog-field">
+            <label className="eyebrow" htmlFor="new-destination">
+              Destination
+            </label>
+            <input
+              id="new-destination"
+              className="field"
+              placeholder="Av. Lopez Mateos 1200, Guadalajara"
+              value={destination}
+              onChange={(e) => setDestination(e.target.value)}
+            />
+          </div>
+
+          <div className="dialog-field">
+            <label className="eyebrow" htmlFor="new-equipment">
+              Equipment &mdash; quotes are checked against this exactly
+            </label>
+            <select
+              id="new-equipment"
+              className="field"
+              value={equipment}
+              onChange={(e) => setEquipment(e.target.value)}
+            >
+              {EQUIPMENT_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="dialog-field">
+            <label className="eyebrow" htmlFor="new-cargo">
+              Cargo (optional)
+            </label>
+            <input
+              id="new-cargo"
+              className="field"
+              placeholder="Textiles, 18 pallets"
+              value={cargo}
+              onChange={(e) => setCargo(e.target.value)}
+            />
+          </div>
+
+          <div className="dialog-field">
+            <label className="eyebrow" htmlFor="new-container">
+              Container number (optional)
+            </label>
+            <input
+              id="new-container"
+              className="field"
+              placeholder="MSCU1234566"
+              value={containerNumber}
+              onChange={(e) => setContainerNumber(e.target.value)}
+            />
+          </div>
+
+          <div className="dialog-field">
+            <label className="eyebrow" htmlFor="new-weight">
+              Weight (optional)
+            </label>
+            <input
+              id="new-weight"
+              className="field"
+              placeholder="18400 kg"
+              value={weight}
+              onChange={(e) => setWeight(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {problem && <p className="dialog-problem">{problem}</p>}
+
+        <div className="dialog-actions">
+          <button className="secondary-button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" disabled={busy} onClick={submit}>
+            {busy ? 'Receiving...' : 'Receive it'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
   const [orders, setOrders] = useState<OrderSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [receiving, setReceiving] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
 
   const load = useCallback(() => {
     voltaApi
@@ -401,6 +605,22 @@ function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
   }, [])
 
   useEffect(load, [load])
+
+  // Straight onto the new operation rather than back to the queue: a container that has just
+  // arrived is not released yet, and confirming that is the very next thing a person does.
+  const receive = async (body: NewOrderRequest) => {
+    setBusy(true)
+    setProblem(null)
+    try {
+      const created = await voltaApi.createOrder(body)
+      setReceiving(false)
+      onOpen(created.id)
+    } catch (e) {
+      setProblem((e as ApiError).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   if (error) return <ErrorState message={error} onRetry={load} />
   if (!orders) return <Loading what="operations" />
@@ -424,13 +644,24 @@ function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
             <p className="eyebrow">Queue</p>
             <h2>Containers on the ground</h2>
           </div>
-          <span className="count">{orders.length}</span>
+          <div className="queue-actions">
+            <span className="count">{orders.length}</span>
+            <button className="secondary-button" onClick={() => setReceiving(true)}>
+              Receive a container
+            </button>
+          </div>
         </div>
+
+        {problem && <div className="command-notice command-denied">
+          <span>!</span>
+          <p>{problem}</p>
+          <button onClick={() => setProblem(null)}>x</button>
+        </div>}
 
         {orders.length === 0 ? (
           <div className="empty-market">
             <strong>Nothing received yet.</strong>
-            <p>Run the seed, or POST an order to /api/orders.</p>
+            <p>Receive a container above, or run the seed.</p>
           </div>
         ) : (
           <div className="operation-list">
@@ -474,6 +705,14 @@ function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
           </div>
         )}
       </section>
+
+      {receiving && (
+        <ReceiveContainerDialog
+          busy={busy}
+          onCancel={() => setReceiving(false)}
+          onSubmit={receive}
+        />
+      )}
     </div>
   )
 }
@@ -544,9 +783,23 @@ function OrderDetail({
   if (!data) return <Loading what="the operation" />
 
   const { order, mandate, demurrage, quotes, calls, commitment, approvals } = data
+  // Which calls a person still owes an answer on. Derived from the approvals already loaded
+  // rather than fetched: an inbound call that raised an incident has to be findable from the
+  // call list, not only from the inbox it landed in.
+  const flaggedCallIds = new Set(
+    approvals.filter((a) => a.status === 'open' && a.call_id).map((a) => String(a.call_id)),
+  )
 
   const openMarket = () =>
     act('The market is open. Carriers are being dialled.', () => voltaApi.startRfq(orderId))
+
+  const confirmIntake = (body: ConfirmIntakeRequest) =>
+    act(
+      body.released
+        ? 'Intake confirmed. The container may move.'
+        : 'Held. No mandate may be granted and nobody will be dialled.',
+      () => voltaApi.confirmIntake(orderId, body),
+    )
 
   /**
    * Step 4 and step 5 in one press, which is how an operator thinks about it: *quote this at
@@ -592,7 +845,7 @@ function OrderDetail({
 
       <div className="operation-hero">
         <div>
-          <p className="eyebrow reference">{order.reference}</p>
+          <FolioLine reference={order.reference} />
           <h1>
             {order.origin ?? '—'} → {order.destination ?? '—'}
           </h1>
@@ -638,7 +891,12 @@ function OrderDetail({
             ) : (
               <div className="compact-calls">
                 {calls.map((call) => (
-                  <CallRow key={call.id} call={call} onOpen={() => onOpenCall(String(call.id))} />
+                  <CallRow
+                    key={call.id}
+                    call={call}
+                    flagged={flaggedCallIds.has(String(call.id))}
+                    onOpen={() => onOpenCall(String(call.id))}
+                  />
                 ))}
               </div>
             )}
@@ -646,6 +904,9 @@ function OrderDetail({
         </div>
 
         <div className="detail-rail">
+          {!order.released_at && (
+            <IntakePanel order={order} busy={busy} onSubmit={confirmIntake} />
+          )}
           <MandatePanel
             mandate={mandate}
             busy={busy}
@@ -664,6 +925,7 @@ function OrderDetail({
                   key={approval.id}
                   approval={approval}
                   busy={busy}
+                  onOpenCall={onOpenCall}
                   onDecide={(status) =>
                     act(`Approval ${status}.`, () =>
                       voltaApi.decideApproval(String(approval.id), {
@@ -677,7 +939,7 @@ function OrderDetail({
             </section>
           )}
 
-          <CommitmentCard commitment={commitment} />
+          <CommitmentCard commitment={commitment} carrier={data.assigned_carrier} />
         </div>
       </div>
     </div>
@@ -960,6 +1222,126 @@ function MandatePanel({
   )
 }
 
+/**
+ * The folio, and a one-press way to get it onto a clipboard.
+ *
+ * It stopped being decoration when it became the inbound caller's identity proof: an
+ * operator now reads this to a carrier, and the carrier reads it back down a phone line to
+ * be verified. Re-typing it from a screen is where the transcription errors come from.
+ */
+function FolioLine({ reference }: { reference: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const copy = () => {
+    // Not available on an insecure origin, and not worth an error toast: the folio is
+    // already on screen and selectable, so the fallback is the operator reading it.
+    void navigator.clipboard?.writeText(reference).then(
+      () => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1500)
+      },
+      () => undefined,
+    )
+  }
+
+  return (
+    <p className="eyebrow reference folio-line">
+      <span>{reference}</span>
+      <button className="folio-copy" onClick={copy} title="Copy the folio">
+        {copied ? 'copied' : 'copy'}
+      </button>
+    </p>
+  )
+}
+
+/* ------------------------------------------------------------------- intake */
+
+/**
+ * Stage 1, and the act that was unreachable from this portal entirely.
+ *
+ * `POST /api/orders/{id}/intake` has existed since migration 0004 added the release gate,
+ * but nothing in the UI called it -- so the only thing an operator could press was "Grant a
+ * mandate", which the backend refuses with a 409 until the container is released. The screen
+ * offered the one action it knew would fail and no route to the one that unblocks it.
+ */
+function IntakePanel({
+  order,
+  busy,
+  onSubmit,
+}: {
+  order: Order
+  busy: boolean
+  onSubmit: (body: ConfirmIntakeRequest) => void
+}) {
+  const [note, setNote] = useState('')
+  const [lastFreeDay, setLastFreeDay] = useState(order.last_free_day ?? '')
+  const released = order.released_at !== null
+
+  return (
+    <section className="action-panel">
+      <p className="eyebrow">Intake</p>
+      <h2>{released ? 'Released to move' : 'Not released'}</h2>
+
+      {released ? (
+        <>
+          <div className="mandate-card">
+            <span className="eyebrow">Confirmed</span>
+            <strong>{formatDate(order.released_at)}</strong>
+            <span>By {order.released_by ?? 'unknown'}</span>
+            {order.release_note && <span>{order.release_note}</span>}
+          </div>
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => onSubmit({ released: false, note: 'Held from the portal.' })}
+          >
+            Hold this container
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="action-note">
+            Nobody has confirmed this container is available. Releasing is a person saying so
+            &mdash; it is never inferred from a discharge date or from a carrier&rsquo;s claim,
+            and it is reversible if something changes.
+          </p>
+          <label className="field">
+            <span>Last free day</span>
+            <input
+              type="date"
+              value={lastFreeDay}
+              onChange={(event) => setLastFreeDay(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>What was checked</span>
+            <input
+              type="text"
+              maxLength={500}
+              placeholder="Terminal confirmed release"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
+          </label>
+          <button
+            className="primary-button"
+            disabled={busy}
+            onClick={() =>
+              onSubmit({
+                released: true,
+                note: note.trim() || null,
+                last_free_day: lastFreeDay || null,
+              })
+            }
+          >
+            Confirm intake
+          </button>
+        </>
+      )}
+    </section>
+  )
+}
+
 /* ------------------------------------------------------------------- market */
 
 function MarketPanel({
@@ -1082,14 +1464,72 @@ function QuoteCard({ quote }: { quote: QuoteRow }) {
 
 /* --------------------------------------------------------------- approvals */
 
+/** A context value worth putting in front of a person, in the order they would want it. */
+const APPROVAL_CONTEXT_FIELDS: { key: string; label: string }[] = [
+  { key: 'detail', label: 'What was said' },
+  { key: 'subject', label: 'Subject' },
+  { key: 'new_eta', label: 'New ETA claimed' },
+  { key: 'from_number', label: 'Caller' },
+  { key: 'claimed_name', label: 'Claimed name' },
+  { key: 'claimed_company', label: 'Claimed company' },
+  { key: 'fact_kind', label: 'Fact offered' },
+]
+
+/**
+ * Everything an escalation or incident carries, rendered.
+ *
+ * Only `award_approval` had a body: an escalation showed two humanised words and two
+ * buttons, so the screen that exists to hand a live call to a person told them nothing
+ * about the call. This is the only surface for an inbound call that never correlated to an
+ * order -- an unknown caller, a wrong-folio probe -- so it has to carry enough to act on.
+ */
+function ApprovalContext({ approval }: { approval: Approval }) {
+  const rows = APPROVAL_CONTEXT_FIELDS.map(({ key, label }) => {
+    const value = approval.context[key]
+    if (typeof value !== 'string' || value.trim() === '') return null
+    return { label, value: humaniseIfCode(key, value) }
+  }).filter((row): row is { label: string; value: string } => row !== null)
+
+  const verified = approval.context.identity_verified
+  const orderKnown = approval.context.order_known
+
+  if (rows.length === 0 && typeof verified !== 'boolean') return null
+
+  return (
+    <div className="approval-context">
+      {typeof verified === 'boolean' && (
+        <span className={verified ? 'status-badge status-allow' : 'status-badge status-escalated'}>
+          {verified ? 'Caller verified' : 'Caller not verified'}
+        </span>
+      )}
+      {orderKnown === false && (
+        <span className="status-badge status-escalated">No shipment matched</span>
+      )}
+      {rows.map((row) => (
+        <div className="approval-context-row" key={row.label}>
+          <small>{row.label}</small>
+          <span>{row.value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** `subject` and `fact_kind` are enum values; everything else is a person's own words. */
+function humaniseIfCode(key: string, value: string): string {
+  return key === 'subject' || key === 'fact_kind' ? humanise(value) : value
+}
+
 function ApprovalCard({
   approval,
   busy,
   onDecide,
+  onOpenCall,
 }: {
   approval: Approval
   busy: boolean
   onDecide: (status: 'approved' | 'rejected') => void
+  onOpenCall?: (callId: string) => void
 }) {
   const comparison = approval.kind === 'award_approval' ? approvalComparison(approval) : null
   return (
@@ -1097,6 +1537,15 @@ function ApprovalCard({
       <strong>{humanise(approval.kind)}</strong>
       <span>{humanise(approval.reason)}</span>
       <small>Raised {formatDate(approval.raised_at)}</small>
+      {!comparison && <ApprovalContext approval={approval} />}
+      {approval.call_id && onOpenCall && (
+        <button
+          className="text-button"
+          onClick={() => onOpenCall(String(approval.call_id))}
+        >
+          Listen to the call →
+        </button>
+      )}
       {comparison && (
         <div className="approval-comparison">
           <strong>Policy-ranked carrier comparison</strong>
@@ -1133,7 +1582,7 @@ function ApprovalCard({
   )
 }
 
-function ApprovalsPage({ onOpen }: { onOpen: (orderId: string) => void }) {
+function ApprovalsPage({ onOpenPath }: { onOpenPath: (path: string) => void }) {
   const [approvals, setApprovals] = useState<Approval[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -1177,26 +1626,45 @@ function ApprovalsPage({ onOpen }: { onOpen: (orderId: string) => void }) {
         </div>
       ) : (
         <div className="operation-list">
-          {approvals.map((approval) => (
-            <button
-              className="operation-row"
-              key={approval.id}
-              onClick={() => approval.order_id && onOpen(approval.order_id)}
-            >
-              <div className="operation-route">
-                <span className="reference">{humanise(approval.kind)}</span>
-                <strong>{humanise(approval.reason)}</strong>
-                <span>Raised {formatDate(approval.raised_at)}</span>
-              </div>
-              <div className="operation-stage">
-                <span className={statusClass(approval.status)}>{humanise(approval.status)}</span>
-              </div>
-              <div className="operation-clock">
-                <small>open</small>
-              </div>
-              <span className="row-arrow">→</span>
-            </button>
-          ))}
+          {approvals.map((approval) => {
+            // An incident raised on an inbound call that never stated a folio has no order
+            // to open. It used to render as a dead row -- a button that did nothing, on the
+            // one screen where that call is visible at all. Open the call instead.
+            const target = approval.order_id
+              ? `/orders/${approval.order_id}`
+              : approval.call_id
+                ? `/calls/${approval.call_id}`
+                : null
+            const detail = approval.context.detail
+            return (
+              <button
+                className="operation-row"
+                disabled={target === null}
+                key={approval.id}
+                onClick={() => target && onOpenPath(target)}
+              >
+                <div className="operation-route">
+                  <span className="reference">{humanise(approval.kind)}</span>
+                  <strong>{humanise(approval.reason)}</strong>
+                  <span>
+                    {typeof detail === 'string' && detail.trim() !== ''
+                      ? detail
+                      : `Raised ${formatDate(approval.raised_at)}`}
+                  </span>
+                </div>
+                <div className="operation-stage">
+                  <span className={statusClass(approval.status)}>{humanise(approval.status)}</span>
+                  {approval.order_id === null && (
+                    <small>no shipment matched</small>
+                  )}
+                </div>
+                <div className="operation-clock">
+                  <small>{formatDate(approval.raised_at)}</small>
+                </div>
+                <span className="row-arrow">→</span>
+              </button>
+            )
+          })}
         </div>
       )}
     </div>
@@ -1211,7 +1679,13 @@ function approvalComparison(approval: Approval): Comparison | null {
 
 /* -------------------------------------------------------------- commitment */
 
-function CommitmentCard({ commitment }: { commitment: Commitment | null }) {
+function CommitmentCard({
+  commitment,
+  carrier,
+}: {
+  commitment: Commitment | null
+  carrier: Carrier | null
+}) {
   if (!commitment) {
     return (
       <section className="surface assignment-card">
@@ -1232,6 +1706,16 @@ function CommitmentCard({ commitment }: { commitment: Commitment | null }) {
       <p className="eyebrow">Commitment</p>
       <h2>{booked ? 'Booked' : 'Not booked'}</h2>
       <span className={statusClass(commitment.state)}>{humanise(commitment.state)}</span>
+      {/* Who holds the load, by name. This is what a person needs in front of them when an
+          inbound caller rings in about a booked shipment -- "is this actually our carrier?"
+          is unanswerable from a UUID, and a UUID is all a quote row carries. */}
+      {carrier && (
+        <div className="assigned-carrier">
+          <small>Contracted carrier</small>
+          <strong>{carrier.name}</strong>
+          <span>{carrier.contact_name ? `${carrier.contact_name} · ` : ''}{carrier.phone}</span>
+        </div>
+      )}
       <p className="commitment-copy">
         {booked
           ? 'The written recap was delivered. That delivery is what promoted this commitment.'
@@ -1254,16 +1738,41 @@ function CommitmentCard({ commitment }: { commitment: Commitment | null }) {
 
 /* ------------------------------------------------------------------- calls */
 
-function CallRow({ call, onOpen }: { call: CallRecord; onOpen: () => void }) {
+/** What we know about who was on the line, in the words an operator would use. */
+function identityLabel(call: CallRecord): string {
+  if (call.identity_verified) return 'identity verified'
+  if (call.identity_level >= 1) return 'number on file, unverified'
+  return 'unverified caller'
+}
+
+function CallRow({
+  call,
+  flagged,
+  onOpen,
+}: {
+  call: CallRecord
+  /** An open escalation or incident points at this call. */
+  flagged?: boolean
+  onOpen: () => void
+}) {
+  const inbound = call.direction === 'inbound'
   return (
-    <button className="call-row" onClick={onOpen}>
+    <button className={inbound ? 'call-row call-row-inbound' : 'call-row'} onClick={onOpen}>
       <div>
         <strong>
+          {inbound && <span className="call-direction-badge">Inbound</span>}
           {humanise(String(call.phase))} · {call.direction}
         </strong>
-        <small>{call.to_number ?? call.from_number ?? 'unknown number'}</small>
+        {/* The caller's number on an inbound call, ours on an outbound one -- on both, the
+            number a person would ring to follow up. Reading to_number first showed our own
+            number on every inbound row for as long as inbound rows have existed. */}
+        <small>
+          {(inbound ? call.from_number : call.to_number) ?? 'unknown number'}
+          {inbound && ` · ${identityLabel(call)}`}
+        </small>
       </div>
       <div className="call-meta">
+        {flagged && <span className="status-badge status-escalated">needs a person</span>}
         <span className={statusClass(call.status)}>{humanise(call.status)}</span>
         <span>{formatDate(call.started_at)}</span>
       </div>

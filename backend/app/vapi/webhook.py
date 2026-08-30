@@ -46,7 +46,9 @@ from app.domain import (
     CallReport,
     CallStatus,
     CompanyProfile,
+    IncidentSubject,
     ReportModel,
+    Severity,
     Store,
     Turn,
 )
@@ -167,6 +169,49 @@ def _turns(artifact: object) -> list[Turn]:
     return turns
 
 
+def _call_numbers(call: object, *, inbound: bool) -> tuple[str | None, str | None]:
+    """(from, to) for a call, in the direction the call actually ran.
+
+    Vapi describes both legs from its own point of view: ``customer`` is always the human on
+    the far end and ``phoneNumber`` is always our number, whoever dialled. Reading
+    ``customer.number`` into ``to_number`` therefore writes the caller into both columns on
+    an inbound call -- which it did until 30 Aug, so every inbound row said we had rung the
+    person who rang us, and the number an operator would call back was indistinguishable
+    from our own.
+    """
+    customer = _dig(call, "customer", "number")
+    ours = _dig(call, "phoneNumber", "number")
+    customer = customer if isinstance(customer, str) else None
+    ours = ours if isinstance(ours, str) else None
+    if inbound:
+        # ``from`` is Vapi's older shape for the caller and is still sent by some accounts.
+        caller = _dig(call, "from", "phoneNumber")
+        return (caller if isinstance(caller, str) else customer), ours
+    return ours, customer
+
+
+#: What a call is worth to a person when the extraction model could not be reached.
+#:
+#: The brief used to be a hard dependency of the notification: a raised ``reporter.report``
+#: returned early, so ``after_report`` never ran and nobody was told anything. On 30 Aug that
+#: was every call -- ``call_reports`` held zero rows across twenty-three of them, and a
+#: carrier who rang to say he had crashed on the way to the warehouse reached no one.
+#:
+#: A summary stitched from the caller's own words is worse than the model's. It is enormously
+#: better than silence, and marking it HIGH is the fail-closed reading: we do not know what
+#: was said, so a person should look.
+def _unextracted_report(call_id: str, turns: list[Turn], phase: CallPhase) -> CallReport:
+    spoken = [turn.text.strip() for turn in turns if turn.speaker == "caller" and turn.text.strip()]
+    tail = " ".join(spoken[-3:]) if spoken else "no caller speech was transcribed"
+    return CallReport(
+        call_id=call_id,
+        summary=f"Automatic brief unavailable. Last words from the caller: {tail}",
+        subject=IncidentSubject.OTHER,
+        severity=Severity.HIGH,
+        model=f"unextracted:{phase.value}",
+    )
+
+
 def _cost_cents(message: object) -> int | None:
     cost = _dig(message, "cost")
     if isinstance(cost, int | float):
@@ -222,8 +267,7 @@ def create_webhook_router(
     async def _handle_assistant_request(message: dict[str, Any]) -> dict[str, object]:
         call = _as_dict(message.get("call"))
         vapi_call_id = call.get("id")
-        from_number = _dig(call, "from", "phoneNumber") or _dig(call, "customer", "number")
-        from_number = from_number if isinstance(from_number, str) else None
+        from_number, to_number = _call_numbers(call, inbound=True)
 
         carrier_id, carrier_name = await _carrier_for(from_number)
 
@@ -255,6 +299,7 @@ def create_webhook_router(
                 carrier_id=carrier_id,
                 identity_level=1 if carrier_id else 0,
                 from_number=from_number,
+                to_number=to_number,
                 started_at=now(),
                 context=context.model_dump(mode="json"),
             )
@@ -285,13 +330,14 @@ def create_webhook_router(
         if existing is not None:
             with suppress(ValueError):
                 phase = CallPhase(existing.phase)
+        from_number, to_number = _call_numbers(call, inbound=inbound)
         record = CallRecord(
             vapi_call_id=vapi_call_id,
             direction=CallDirection.INBOUND if inbound else CallDirection.OUTBOUND,
             phase=phase.value,
             status=mapped,
-            from_number=_dig(call, "from", "phoneNumber"),
-            to_number=_dig(call, "customer", "number"),
+            from_number=from_number,
+            to_number=to_number,
         )
         applied = await ledger.upsert_from_webhook(
             record, f"{vapi_call_id}:status-update:{raw_status}"
@@ -348,6 +394,7 @@ def create_webhook_router(
                 log.exception("vapi.end_of_call.context_unreadable", call_id=call_id)
 
         turns = stored.transcript if stored is not None and stored.transcript else record.transcript
+        extracted = True
         try:
             report = await reporter.report(call_id, turns, context)
             await store.save_report(report)
@@ -356,7 +403,8 @@ def create_webhook_router(
             # evidence. The brief is a convenience on top of it, and losing it must not
             # cost us the row underneath.
             log.exception("vapi.end_of_call.report_failed", call_id=call_id)
-            return {"received": True, "reported": False}
+            extracted = False
+            report = _unextracted_report(call_id, turns, phase)
 
         if after_report is not None and stored is not None:
             try:
@@ -368,7 +416,7 @@ def create_webhook_router(
                 log.exception("vapi.end_of_call.after_report_failed", call_id=call_id)
                 return {"received": True, "reported": True, "notified": False}
 
-        result: dict[str, object] = {"received": True, "reported": True}
+        result: dict[str, object] = {"received": True, "reported": extracted}
         if after_report is not None:
             result["notified"] = True
         return result

@@ -287,6 +287,54 @@ def test_receiving_a_cargo_is_idempotent_on_the_reference() -> None:
     assert len(store.orders) == 1
 
 
+def test_an_intake_with_no_folio_is_allocated_one() -> None:
+    """Nothing generated the folio: it arrived in the request body or not at all.
+
+    That was survivable while it was a label on a screen. It is now what an inbound caller
+    states to prove who they are, so "whoever typed it picked a fresh one" became the wrong
+    guarantee -- a collision is a caller reaching a load that is not theirs.
+    """
+    client, store, _, _, _ = build()
+    body = _new_order()
+    body.pop("reference")
+
+    created = client.post("/api/orders", json=body)
+
+    assert created.status_code == 201
+    reference = created.json()["reference"]
+    assert reference.startswith("OP-MZO-"), "the lane is legible in the folio a driver reads"
+    assert reference[-4:].isdigit(), "a sequence tail, so two intakes cannot collide"
+    # Returned, not just stored: the intake screen has to show the operator what to read to
+    # the carrier, and the carrier reads it back to us on the inbound call.
+    assert store.orders[created.json()["id"]].reference == reference
+
+
+def test_two_folioless_intakes_never_collide() -> None:
+    """The property the whole identity check now rests on."""
+    client, _, _, _, _ = build()
+    body = _new_order()
+    body.pop("reference")
+
+    first = client.post("/api/orders", json=body).json()
+    second = client.post("/api/orders", json=body).json()
+
+    assert first["reference"] != second["reference"]
+    assert first["id"] != second["id"], "no folio means nothing to be idempotent on"
+
+
+def test_an_origin_off_the_map_still_gets_a_folio() -> None:
+    """A port we have no code for is not a reason to refuse an intake."""
+    client, _, _, _, _ = build()
+    body = _new_order()
+    body.pop("reference")
+    body["origin"] = "Puerto Quetzal"
+
+    created = client.post("/api/orders", json=body)
+
+    assert created.status_code == 201
+    assert created.json()["reference"].startswith("OP-GEN-")
+
+
 def test_the_queue_shows_the_demurrage_countdown() -> None:
     """The countdown is what makes everything downstream urgent, so it is on the list row."""
     client, _, _, _, _ = build()
@@ -328,6 +376,9 @@ def test_the_aggregate_is_one_call() -> None:
         "calls",
         "commitment",
         "approvals",
+        # Resolved server-side because a carrier_id is not a name, and every screen that
+        # wanted to say who has the load could previously only show a UUID.
+        "assigned_carrier",
     }
 
 
@@ -976,15 +1027,27 @@ def test_a_store_without_the_migration_says_so() -> None:
 
 
 def test_a_new_order_is_waiting_on_a_person() -> None:
-    """The question a portal has to answer: is this waiting on me, or is it working?"""
+    """The question a portal has to answer: is this waiting on me, or is it working?
+
+    Intake first, then the mandate. This asserted "Grant a mandate" on an unreleased order
+    until 30 Aug, which is the one action the mandate endpoint refuses with a 409 -- the
+    screen offered a button it knew would be rejected, and no route to the act that unblocks
+    it. A next action that cannot be taken is worse than no next action at all.
+    """
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
-    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+    unreleased = client.get(f"/api/orders/{order_id}").json()["next_action"]
 
-    assert action["actor"] == "operator"
-    assert action["label"] == "Grant a mandate"
-    assert action["stage"] == "Mandate"
+    assert unreleased["actor"] == "operator"
+    assert unreleased["label"] == "Confirm intake"
+    assert unreleased["stage"] == "Received"
+
+    _confirm_intake(client, order_id)
+    released = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert released["label"] == "Grant a mandate"
+    assert released["stage"] == "Mandate"
 
 
 def test_an_open_market_is_working_not_waiting() -> None:

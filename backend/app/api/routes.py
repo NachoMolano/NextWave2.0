@@ -136,6 +136,43 @@ def _guard() -> Iterator[None]:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
 
 
+#: Ports we dial out of often enough that the folio should say which one at a glance. A
+#: driver reads the folio aloud from a dispatch sheet, and "OP-MZO-0007" tells the person
+#: taking the call which lane it is before they have looked anything up.
+_PORT_CODES: tuple[tuple[str, str], ...] = (
+    ("manzanillo", "MZO"),
+    ("veracruz", "VER"),
+    ("lazaro", "LZC"),
+    ("altamira", "ATM"),
+    ("ensenada", "ESE"),
+    ("san francisco", "SFO"),
+    ("long beach", "LGB"),
+    ("los angeles", "LAX"),
+    ("oakland", "OAK"),
+    ("miami", "MIA"),
+    ("houston", "HOU"),
+    ("new york", "NYC"),
+)
+
+#: Used when the origin is absent or is somewhere not in the table. Deliberately not derived
+#: from the first three letters of whatever was typed: "Ori" and "Orl" are one keystroke
+#: apart on a phone line, and a folio a caller mishears is a caller who cannot be verified.
+_DEFAULT_PORT_CODE = "GEN"
+
+
+def _folio_prefix(origin: str | None) -> str:
+    """``OP-MZO`` for a Manzanillo intake. Presentation, never identity.
+
+    The uniqueness that authenticates an inbound caller comes from the sequence behind
+    ``next_reference``; this only decides what the folio looks like when it is read out.
+    """
+    haystack = (origin or "").casefold()
+    for needle, code in _PORT_CODES:
+        if needle in haystack:
+            return f"OP-{code}"
+    return f"OP-{_DEFAULT_PORT_CODE}"
+
+
 def create_api_router(
     store: PortalStore,
     *,
@@ -163,19 +200,27 @@ def create_api_router(
 
     @router.post("/orders", response_model=OrderSummary, status_code=201)
     async def create_order(body: NewOrderRequest) -> OrderSummary:
-        """A cargo was received at port. Idempotent on the reference.
+        """A cargo was received at port. Idempotent on the reference when one is supplied.
 
         The event is written after the row so that a redelivered intake is a no-op rather
         than a second folio: save_order upserts, and the event key is the reference itself.
+
+        An intake with no reference is *not* idempotent, and cannot be: with nothing to be
+        idempotent on, the only alternative is refusing to create the order at all. The
+        allocated folio is returned in the response, which is what the intake screen shows
+        the operator to read to the carrier.
         """
+        fields = body.model_dump(exclude_unset=False)
         with _guard():
-            order_id = await store.save_order(Order(id="", **body.model_dump(exclude_unset=False)))
+            reference = body.reference or await store.next_reference(_folio_prefix(body.origin))
+            fields["reference"] = reference
+            order_id = await store.save_order(Order(id="", **fields))
             await store.append_event(
                 EventRow(
                     order_id=order_id,
                     type="order.received",
-                    payload={"reference": body.reference},
-                    idempotency_key=f"order.received:{body.reference}",
+                    payload={"reference": reference},
+                    idempotency_key=f"order.received:{reference}",
                 )
             )
             order = await store.order(order_id)
@@ -230,6 +275,12 @@ def create_api_router(
             calls = await store.calls_for(order_id)
             commitment = await store.live_commitment(order_id)
             approvals = await store.open_approvals(order_id)
+            # Only once there is one. An unawarded order costs no extra round trip.
+            assigned = (
+                await store.carrier(order.assigned_carrier_id)
+                if order.assigned_carrier_id
+                else None
+            )
         today = now().date()
         live_quotes = [q for q in quotes if str(q.status) in ("proposed", "selected", "accepted")]
         return OrderAggregate(
@@ -246,6 +297,7 @@ def create_api_router(
             calls=calls,
             commitment=commitment,
             approvals=approvals,
+            assigned_carrier=assigned,
         )
 
     @router.post("/orders/{order_id}/intake", response_model=OrderAggregate)
