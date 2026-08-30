@@ -371,6 +371,24 @@ def create_api_router(
                 status_code=409, detail=f"approval {approval_id} is already {approval.status}"
             )
 
+        # An award approval that names no winner cannot be approved: market.award raises
+        # ValueError("the approval carries no winning quote"), which _guard turns into a 500
+        # the portal shows as nothing happening at all. Refusing it here says why, and the
+        # refusal is the truth -- an award with no candidate is a question for the market,
+        # not a decision a person can make.
+        if (
+            body.status == "approved"
+            and str(approval.kind) == "award_approval"
+            and not approval.context.get("winner_quote_id")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This comparison has no eligible carrier, so there is nothing to award. "
+                    "Quote the market again, or raise the ceiling if every quote was over it."
+                ),
+            )
+
         with _guard():
             if body.status == "approved" and approval.order_id:
                 order = await store.order(approval.order_id)
@@ -402,7 +420,22 @@ def create_api_router(
     async def list_calls(order_id: str = Query(...)) -> list[CallDetail]:
         with _guard():
             calls = await store.calls_for(order_id)
-            return [CallDetail(call=c, report=None, carrier=None) for c in calls]
+            # The carrier was hardcoded None here, so the list could only ever say
+            # "rfq · outbound" over a phone number -- the one column that tells an operator
+            # who is on the other end. Fetched once per distinct carrier rather than per
+            # call: three calls to the same carrier is one lookup.
+            carriers: dict[str, Carrier | None] = {}
+            for record in calls:
+                if record.carrier_id and record.carrier_id not in carriers:
+                    carriers[record.carrier_id] = await store.carrier(record.carrier_id)
+            return [
+                CallDetail(
+                    call=c,
+                    report=None,
+                    carrier=carriers.get(c.carrier_id) if c.carrier_id else None,
+                )
+                for c in calls
+            ]
 
     @router.get("/calls/{call_id}", response_model=CallDetail)
     async def get_call(call_id: str) -> CallDetail:

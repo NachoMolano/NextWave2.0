@@ -116,11 +116,25 @@ def _clip(text: str, limit: int = 80) -> str:
     return flat[: limit - 1].rstrip(" ,.;:") + "…"
 
 
-def _offset(at: datetime, started_at: datetime | None) -> int | None:
+def _offset(
+    at: datetime, started_at: datetime | None, ended_at: datetime | None = None
+) -> int | None:
+    """Milliseconds into the call, or None when the moment is not inside the call.
+
+    ``ended_at`` matters more than it looks. An award approval raised seventeen minutes
+    after a two-minute call was rendering as "17:09" on the call's own clock, which reads
+    as something that happened while the carrier was still on the line. A moment outside
+    the call has no call-relative time, and saying so is the honest answer: the row keeps
+    its absolute timestamp and the column shows that instead.
+    """
     if started_at is None:
         return None
     delta = int((at - started_at).total_seconds() * 1000)
-    return delta if delta >= 0 else None
+    if delta < 0:
+        return None
+    if ended_at is not None and at > ended_at:
+        return None
+    return delta
 
 
 def _clock(offset_ms: int | None) -> str:
@@ -147,6 +161,7 @@ def build_trace(
 ) -> list[TraceRow]:
     """Merge the ledger into one ordered story, oldest first."""
     started = call.started_at
+    ended = call.ended_at
     rows: list[TraceRow] = []
 
     # --- the call itself ------------------------------------------------------------
@@ -205,7 +220,7 @@ def build_trace(
         rows.append(
             TraceRow(
                 at=decision.decided_at,
-                offset_ms=_offset(decision.decided_at, started),
+                offset_ms=_offset(decision.decided_at, started, ended),
                 category="policy",
                 counterparty=_clip(said),
                 volta=_clip(f"Compared the proposal with the {cap} mandate cap."),
@@ -226,7 +241,7 @@ def build_trace(
         rows.append(
             TraceRow(
                 at=event.created_at or started or datetime.now().astimezone(),
-                offset_ms=_offset(event.created_at, started) if event.created_at else None,
+                offset_ms=_offset(event.created_at, started, ended) if event.created_at else None,
                 category=category,
                 counterparty="—",
                 volta=_clip(volta),
@@ -242,7 +257,7 @@ def build_trace(
         rows.append(
             TraceRow(
                 at=approval.raised_at,
-                offset_ms=_offset(approval.raised_at, started),
+                offset_ms=_offset(approval.raised_at, started, ended),
                 category="decision",
                 counterparty="—",
                 volta=_clip("Refused to commit and selected human escalation."),
@@ -277,7 +292,7 @@ def build_trace(
         rows.append(
             TraceRow(
                 at=call.ended_at,
-                offset_ms=_offset(call.ended_at, started),
+                offset_ms=_offset(call.ended_at, started, ended),
                 category="action",
                 counterparty=_clip("Ended the call."),
                 volta=_clip(f"Closed the call: {call.ended_reason or 'no reason reported'}."),
@@ -290,7 +305,7 @@ def build_trace(
         # Sort by what the row displays. Sorting by absolute time while displaying a
         # call-relative one lets the two disagree on screen, and a trace whose order argues
         # with its own timestamps is worse than no trace.
-        derived = row.offset_ms if row.offset_ms is not None else _offset(row.at, started)
+        derived = row.offset_ms if row.offset_ms is not None else _offset(row.at, started, ended)
         return (0, derived, row.at) if derived is not None else (1, 0, row.at)
 
     return sorted(rows, key=_order)
