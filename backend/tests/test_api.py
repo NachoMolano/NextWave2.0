@@ -43,6 +43,11 @@ NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 
 #: The identity the configured token stands for. Every action is recorded against it.
 PORTAL_ACTOR = "ops@volta.test"
+
+#: Long enough not to trip the weak-token warning the app logs at startup.
+MARIA_TOKEN = "tok-maria-aaaaaaaaaaaaaaaaaa"
+DIEGO_TOKEN = "tok-diego-bbbbbbbbbbbbbbbbbb"
+SHARED_TOKEN = "tok-shared-cccccccccccccccccc"
 AUTH = {"Authorization": "Bearer portal-test-token"}
 
 
@@ -792,3 +797,81 @@ def test_a_finished_order_asks_nothing_of_anyone() -> None:
 
     assert action["actor"] == "nobody"
     assert action["urgency"] == "none"
+
+
+# ------------------------------------------------------------------ who is calling
+
+
+def _app_with(settings: Settings) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_api_router(
+            PortalMemoryStore(),  # type: ignore[arg-type]
+            market=FakeMarket(),  # type: ignore[arg-type]
+            sweep=FakeSweep(),
+            dial=FakeDialler(),
+            now=_now,
+            settings=settings,
+        ),
+        prefix="/api",
+    )
+    return TestClient(app)
+
+
+def test_per_person_tokens_each_act_as_themselves() -> None:
+    """The point of the whole exercise.
+
+    With one shared token, "maria approved this" means "somebody holding the shared token
+    approved this" -- a human-looking name claiming more accountability than the system can
+    back. One token per person makes the same row true.
+    """
+    client = _app_with(
+        Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx,{DIEGO_TOKEN}:diego@volta.mx")
+    )
+
+    maria = client.get("/api/session", headers={"Authorization": f"Bearer {MARIA_TOKEN}"})
+    diego = client.get("/api/session", headers={"Authorization": f"Bearer {DIEGO_TOKEN}"})
+
+    assert maria.json()["actor"] == "maria@volta.mx"
+    assert diego.json()["actor"] == "diego@volta.mx"
+    assert maria.json()["shared_token"] is False
+
+
+def test_the_single_token_still_works_and_says_it_is_shared() -> None:
+    """An existing deployment keeps working, and the portal admits what the name means."""
+    client = _app_with(
+        Settings(portal_api_token=SHARED_TOKEN, portal_manager_identity="ops@volta.mx")
+    )
+
+    body = client.get("/api/session", headers={"Authorization": f"Bearer {SHARED_TOKEN}"}).json()
+
+    assert body["actor"] == "ops@volta.mx"
+    assert body["shared_token"] is True
+
+
+def test_revoking_one_person_leaves_the_others_alone() -> None:
+    """The other half of per-person tokens: access can be taken away one at a time."""
+    both = Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx,{DIEGO_TOKEN}:diego@volta.mx")
+    revoked = Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx")
+    diego = {"Authorization": f"Bearer {DIEGO_TOKEN}"}
+    maria = {"Authorization": f"Bearer {MARIA_TOKEN}"}
+
+    assert _app_with(both).get("/api/session", headers=diego).status_code == 200
+    assert _app_with(revoked).get("/api/session", headers=diego).status_code == 401
+    assert _app_with(revoked).get("/api/session", headers=maria).status_code == 200
+
+
+def test_an_unconfigured_portal_refuses_rather_than_opens() -> None:
+    """503, not 200. /api carries the only endpoint that can write a price cap."""
+    client = _app_with(Settings(portal_tokens="", portal_api_token=""))
+
+    assert client.get("/api/orders").status_code == 503
+
+
+def test_a_wrong_token_is_401_not_a_hint() -> None:
+    client = _app_with(Settings(portal_tokens=f"{SHARED_TOKEN}:ops@volta.mx"))
+
+    response = client.get("/api/orders", headers={"Authorization": "Bearer tok-wrong"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "unauthorized"

@@ -141,15 +141,31 @@ def create_api_router(
     now: Callable[[], datetime],
     settings: Settings,
 ) -> APIRouter:
+    identities = settings.portal_identities()
+    shared = not settings.portal_tokens.strip()
+
     async def authenticate(authorization: Annotated[str | None, Header()] = None) -> str:
-        token = settings.portal_api_token.strip()
-        actor = settings.portal_manager_identity.strip()
-        if not token or not actor:
+        """Who is calling. The answer becomes the audit actor, so it comes from the credential.
+
+        Every configured token is compared, and always all of them: returning early on the
+        first match would make the response time depend on which token was presented, which
+        over enough requests says something about the set of valid tokens. `compare_digest`
+        is constant-time per comparison; the loop keeps the number of comparisons constant too.
+        """
+        if not identities:
             raise HTTPException(status_code=503, detail="portal authentication is not configured")
+
         scheme, separator, credential = (authorization or "").partition(" ")
-        if not separator or scheme.lower() != "bearer" or not compare_digest(credential, token):
+        if not separator or scheme.lower() != "bearer":
             raise HTTPException(status_code=401, detail="unauthorized")
-        return actor
+
+        matched: str | None = None
+        for token, identity in identities.items():
+            if compare_digest(credential, token):
+                matched = identity
+        if matched is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return matched
 
     router = APIRouter(tags=["portal"], dependencies=[Depends(authenticate)])
 
@@ -450,7 +466,7 @@ def create_api_router(
     @router.get("/session", response_model=Session)
     async def get_session(actor: Annotated[str, Depends(authenticate)]) -> Session:
         """Who this token is. Lets the portal show whose name an action will carry."""
-        return Session(actor=actor, shared_token=True)
+        return Session(actor=actor, shared_token=shared)
 
     @router.put("/profile", response_model=BusinessProfile)
     async def update_profile(

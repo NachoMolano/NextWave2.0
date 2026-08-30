@@ -96,6 +96,24 @@ def build_tools(
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+
+    # A short portal token on a public URL is a password, not a secret, and the failure is
+    # silent: nothing breaks, it is merely guessable. Warned rather than refused, because
+    # refusing to boot over a policy judgement mid-demo is the wrong trade -- but said out
+    # loud at the one moment somebody is watching the logs.
+    weak = [
+        token
+        for token in settings.portal_identities()
+        if len(token) < settings.portal_minimum_token_length
+    ]
+    if weak:
+        log.warning(
+            "portal.token_too_short",
+            count=len(weak),
+            minimum=settings.portal_minimum_token_length,
+            detail="a short portal token is guessable on a public URL; rotate it",
+        )
+
     production_errors = settings.production_errors()
     if production_errors:
         raise RuntimeError(
