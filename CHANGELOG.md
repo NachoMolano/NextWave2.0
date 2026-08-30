@@ -16,6 +16,70 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T01:19-0500 · store, api, supabase · nacho/track-c
+
+Track C: `store/` and `api/` implemented, the RLS posture hardened, the world seeded.
+`uv run pytest` 96 passed / 15 skipped / 2 xfailed, `ruff` and `mypy --strict` clean.
+
+**`store/supabase.py` uses the async client, not `asyncio.to_thread`.** The stub and
+BUILD_PLAN both said to run a sync client in a worker thread; that predates the pinned
+version -- `supabase` 2.31 ships `AsyncClient` on `httpx.AsyncClient`. The thread route
+queues every store call behind the default executor's `min(32, cpu+4)` cap while PostgREST's
+own default timeout is 120s, and `to_thread` is not cancellable, so a caller that gives up
+leaves the thread running. `vapi/webhook.py` has a hard 7.5s budget for one
+`carrier_by_phone`; that is the wrong risk to take. Construction still touches no network, so
+`main.py` can keep building the store at import time and `/health` still answers when the
+database does not.
+
+**`supabase/migrations/0002_rls_posture.sql`.** 0001 left `anon` -- the role behind the
+publishable key that ships inside any browser -- holding DELETE, INSERT, SELECT and UPDATE on
+every table including `calls` and `commitments`. Every row was denied, because RLS was on with
+no policies, so the safety of recordings, transcripts and commitments rested entirely on
+nobody ever writing `create policy ... using (true)`. 0002 revokes those privileges and
+counter-declares the default privileges so new tables do not silently reopen it. No
+behavioural change: the backend uses the service role. The migration also records what
+policies should look like on the day an authenticated dashboard reads Supabase directly, and
+why that day also requires moving the backend off `service_role` -- it holds BYPASSRLS, so RLS
+constrains nothing our own code does. The append-only guarantee comes from GRANT, not RLS.
+
+Five things found that belong to other people. None are edited here.
+
+1. **`InMemoryStore.upsert_call` erases evidence.** It replaces the stored record wholesale,
+   so the empty transcript a `status-update` carries wipes the real one written moments
+   earlier by the `end-of-call-report`. `ports.py` gives *exactly that ordering* as the reason
+   the method is an upsert. The Supabase implementation merges instead, which is why
+   `test_store.py::test_a_redelivered_status_update_does_not_erase_the_transcript` passes
+   there and is pinned `xfail(strict=True)` for the fake -- so fixing the fake fails the test
+   and forces the marker's removal, the same booby-trap Phase 0 used for STATUS_CHECK.
+2. **`InMemoryStore.resolve_approval` does not set `decided_at`.** The `decided_has_decider`
+   check refuses any non-open approval without one, so code that passes the fake violates the
+   database. `SupabaseStore` stamps it; the fake should too.
+3. **The `Store` Protocol has no list reads.** The portal needs all orders, all carriers, and
+   the calls for one order; `ports.py` was shaped around one call and one order at a time,
+   which is what the phone needs. `api/routes.py` declares a local `PortalStore(Store,
+   Protocol)` with `list_orders`, `list_carriers` and `calls_for` rather than widening a
+   contract four tracks build against. They belong in `ports.py`; until they are there, every
+   implementation grows them separately, which is the drift the shared suite exists to catch.
+   (`list_orders`/`list_carriers` are named around `InMemoryStore.orders` and `.carriers`
+   already being dict attributes.)
+4. **`tools/market.py` has no renegotiate entry point.** `POST /api/orders/{id}/renegotiate`
+   answers 501 naming Track E rather than pretending. No TODO; the test asserts the 501.
+5. **`test_seam.py::test_implements_its_protocol` cannot catch signature drift.**
+   `runtime_checkable` Protocols compare method *names* only, so it passes even if an
+   implementation's arguments diverge from `ports.py`. Worth knowing before trusting it as the
+   seam check. Not edited -- it is not Track C's file.
+
+→ Affects: **Track E** -- `main.py` wiring is two lines and nothing else:
+`from app.api import create_api_router`, then
+`app.include_router(create_api_router(store, market=market, sweep=sweep, now=now_utc, settings=settings), prefix="/api")`.
+`sweep` is `Callable[[], Awaitable[list[str]]]` -- bind `jobs.sweep_deadlines` with its deps,
+because `api` may not import `jobs` under the layering contract. Also items 3 and 4 above.
+**Phase 0** -- items 1, 2, 3, 5. **Everyone** -- 0002 is applied; the database is seeded with
+four carriers and OP-MZO-0001, and the order carries **no mandate on purpose**: a human grants
+the ceiling through `POST /api/orders/{id}/mandate`, which is the only cap writer there is.
+
+---
+
 ## 2026-08-30T01:02-0500 · supabase, store · nacho/track-c
 
 `0001_init.sql` is applied and verified against the live project. Phase 0 shipped it
