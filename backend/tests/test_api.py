@@ -61,17 +61,34 @@ class PortalMemoryStore(InMemoryStore):
 
 
 class FakeMarket:
-    """Records what the portal asked the market to do. Dials nothing."""
+    """Records what the portal asked the market to do. Dials nothing itself.
+
+    ``plan_rfq`` returns plans the first time and nothing afterwards, which is what the real
+    one does: the market is claimed by an idempotency key on the mandate version, so a second
+    click on the same mandate plans nothing and therefore dials nobody.
+    """
 
     def __init__(self, *, award_conflict: bool = False) -> None:
         self.planned: list[tuple[str, int]] = []
         self.awarded: list[str] = []
         self.award_conflict = award_conflict
-        self.plans: list[DialPlan] = []
 
     async def plan_rfq(self, order: Order, count: int) -> list[DialPlan]:
+        already = any(planned == str(order.id) for planned, _ in self.planned)
         self.planned.append((str(order.id), count))
-        return list(self.plans)
+        if already:
+            return []
+        return [
+            DialPlan(
+                call_id=f"call-{index}",
+                carrier=Carrier(
+                    id=f"c{index}", name=f"Carrier {index}", phone=f"+5255000000{index}"
+                ),
+                to_number=f"+5255000000{index}",
+                context={},
+            )
+            for index in range(count)
+        ]
 
     async def rank(self, order: Order) -> Comparison:
         return Comparison(
@@ -92,14 +109,18 @@ class FakeMarket:
 
 
 class FakeDialler:
-    """Records what the portal handed to the campaign. Places no call."""
+    """Records what would have been dialled. Never touches the network."""
 
     def __init__(self) -> None:
         self.batches: list[list[DialPlan]] = []
 
-    async def __call__(self, plans: list[DialPlan]) -> dict[str, str]:
-        self.batches.append(list(plans))
+    async def __call__(self, plans: list[DialPlan]) -> object:
+        self.batches.append(plans)
         return {plan.call_id: f"vapi-{plan.call_id}" for plan in plans}
+
+    @property
+    def numbers_dialled(self) -> list[str]:
+        return [plan.to_number for batch in self.batches for plan in batch]
 
 
 class FakeSweep:
@@ -168,7 +189,7 @@ def _mandate() -> dict[str, object]:
 
 def test_receiving_a_cargo_is_idempotent_on_the_reference() -> None:
     """A re-delivered intake must not open a second folio for one container."""
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
 
     first = client.post("/api/orders", json=_new_order())
     second = client.post("/api/orders", json=_new_order())
@@ -181,7 +202,7 @@ def test_receiving_a_cargo_is_idempotent_on_the_reference() -> None:
 
 def test_the_queue_shows_the_demurrage_countdown() -> None:
     """The countdown is what makes everything downstream urgent, so it is on the list row."""
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     client.post("/api/orders", json=_new_order())
 
     row = client.get("/api/orders").json()[0]
@@ -194,7 +215,7 @@ def test_the_queue_shows_the_demurrage_countdown() -> None:
 
 def test_a_new_order_authorizes_nothing() -> None:
     """No mandate is not 'no limit'. It is a permission that was never granted."""
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     body = client.get(f"/api/orders/{order_id}").json()
@@ -206,7 +227,7 @@ def test_a_new_order_authorizes_nothing() -> None:
 
 def test_the_aggregate_is_one_call() -> None:
     """A human approving an award should not watch a page fill in piece by piece."""
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     body = client.get(f"/api/orders/{order_id}").json()
@@ -223,7 +244,7 @@ def test_the_aggregate_is_one_call() -> None:
 
 
 def test_an_unknown_order_is_404_not_500() -> None:
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     assert client.get("/api/orders/does-not-exist").status_code == 404
 
 
@@ -232,7 +253,7 @@ def test_an_unknown_order_is_404_not_500() -> None:
 
 def test_setting_a_mandate_bumps_the_version_and_records_who() -> None:
     """The row a jury reads when it asks who authorized the spend."""
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     body = client.post(f"/api/orders/{order_id}/mandate", json=_mandate()).json()
@@ -247,7 +268,7 @@ def test_setting_a_mandate_bumps_the_version_and_records_who() -> None:
 
 def test_raising_the_cap_versions_it_rather_than_overwriting() -> None:
     """Decisions copy the ceiling by value, so an old refusal stays explainable."""
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
@@ -263,7 +284,7 @@ def test_raising_the_cap_versions_it_rather_than_overwriting() -> None:
 
 def test_a_mandate_without_a_name_on_it_is_rejected() -> None:
     """An authorization nobody signed is not an authorization."""
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     unsigned = {k: v for k, v in _mandate().items() if k != "set_by"}
@@ -275,7 +296,7 @@ def test_a_mandate_without_a_name_on_it_is_rejected() -> None:
 
 
 def test_the_market_will_not_open_without_a_mandate() -> None:
-    client, _, market, _, _dial = build()
+    client, _, market, _, dial = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     response = client.post(f"/api/orders/{order_id}/rfq")
@@ -283,11 +304,12 @@ def test_the_market_will_not_open_without_a_mandate() -> None:
     assert response.status_code == 409
     assert "no mandate" in response.json()["detail"]
     assert market.planned == []
+    assert dial.numbers_dialled == []
 
 
 def test_opening_the_market_asks_for_at_least_three_carriers() -> None:
     """The brief requires three. The count comes from config, never from a caller."""
-    client, _, market, _, _dial = build()
+    client, _, market, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
@@ -296,8 +318,41 @@ def test_opening_the_market_asks_for_at_least_three_carriers() -> None:
     assert market.planned == [(order_id, 3)]
 
 
+def test_opening_the_market_actually_dials() -> None:
+    """Planning is not calling.
+
+    The endpoint used to plan and stop there: call rows appeared, the portal said the market
+    was open, and nobody's phone rang. A test that only asserted plan_rfq was reached could
+    not tell the difference, which is why this one asserts on the dialler.
+    """
+    client, _, _, _, dial = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+
+    client.post(f"/api/orders/{order_id}/rfq")
+
+    assert len(dial.numbers_dialled) == 3
+
+
+def test_opening_the_market_twice_dials_nobody_twice() -> None:
+    """Two clicks, or two instances against one database, must not ring a carrier twice.
+
+    The market is claimed by an idempotency key on the mandate version, so the second attempt
+    plans nothing and there is nothing to dial.
+    """
+    client, _, _, _, dial = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+
+    client.post(f"/api/orders/{order_id}/rfq")
+    first = list(dial.numbers_dialled)
+    client.post(f"/api/orders/{order_id}/rfq")
+
+    assert dial.numbers_dialled == first
+
+
 def test_the_comparison_carries_the_cap_it_was_ranked_against() -> None:
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
@@ -339,7 +394,7 @@ def _rfq_call(store: PortalMemoryStore, order_id: str, carrier_id: str) -> str:
 
 
 def test_approving_an_award_releases_the_award_call() -> None:
-    client, store, market, _, _dial = build()
+    client, store, market, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     approval_id = _award_approval(store, order_id)
 
@@ -355,7 +410,7 @@ def test_approving_an_award_releases_the_award_call() -> None:
 
 def test_a_second_award_is_a_409_not_a_500() -> None:
     """The database refusing two bookings is the system working, not the system breaking."""
-    client, store, _, _, _dial = build(market=FakeMarket(award_conflict=True))
+    client, store, _, _, _ = build(market=FakeMarket(award_conflict=True))
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     approval_id = _award_approval(store, order_id)
 
@@ -368,7 +423,7 @@ def test_a_second_award_is_a_409_not_a_500() -> None:
 
 
 def test_an_approval_is_decided_once() -> None:
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     approval_id = _award_approval(store, order_id)
     decision = {"status": "approved", "decided_by": "ops@volta.test"}
@@ -380,7 +435,7 @@ def test_an_approval_is_decided_once() -> None:
 
 
 def test_the_inbox_lists_only_what_is_open() -> None:
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     approval_id = _award_approval(store, order_id)
     assert len(client.get("/api/approvals").json()) == 1
@@ -397,7 +452,7 @@ def test_the_inbox_lists_only_what_is_open() -> None:
 
 
 def test_a_call_carries_its_brief_and_its_carrier() -> None:
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     carrier = store.add_carrier(
         Carrier(id="carrier-1", name="Fletes del Pacifico", phone="+523141000001")
@@ -412,12 +467,12 @@ def test_a_call_carries_its_brief_and_its_carrier() -> None:
 
 
 def test_an_unknown_call_is_404() -> None:
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     assert client.get("/api/calls/nope").status_code == 404
 
 
 def test_carriers_are_listed_for_the_portal() -> None:
-    client, store, _, _, _dial = build()
+    client, store, _, _, _ = build()
     store.add_carrier(Carrier(id="c2", name="Transportes Colima", phone="+523141000002"))
     store.add_carrier(Carrier(id="c1", name="Autolineas Manzanillo", phone="+523141000003"))
 
@@ -431,7 +486,7 @@ def test_carriers_are_listed_for_the_portal() -> None:
 
 def test_the_sweep_dials_once_and_then_nothing() -> None:
     """A second press must dial nothing. That is the demo assertion for OUTBOUND 2."""
-    client, _, _, sweep, _dial = build()
+    client, _, _, sweep, _ = build()
 
     first = client.post("/api/jobs/sweep").json()
     second = client.post("/api/jobs/sweep").json()
@@ -446,7 +501,7 @@ def test_the_sweep_dials_once_and_then_nothing() -> None:
 
 def test_renegotiation_answers_501_and_names_the_owner() -> None:
     """No TODO comment: it is not built, it says so, and it says whose it is."""
-    client, _, _, _, _dial = build()
+    client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     response = client.post(f"/api/orders/{order_id}/renegotiate")
@@ -462,71 +517,6 @@ def test_an_unconfigured_store_is_503_not_a_crash() -> None:
         async def list_orders(self) -> list[Order]:
             raise StoreUnavailable("SUPABASE_URL is not configured")
 
-    client, _, _, _, _dial = build(Unconfigured())
+    client, _, _, _, _ = build(Unconfigured())
 
     assert client.get("/api/orders").status_code == 503
-
-
-# ------------------------------------------------------------------ opening the market dials
-
-
-def _plan(call_id: str, phone: str) -> DialPlan:
-    return DialPlan(
-        call_id=call_id,
-        carrier=Carrier(id=f"carrier-{call_id}", name="Fletes del Pacifico", phone=phone),
-        to_number=phone,
-        context={},
-    )
-
-
-def test_opening_the_market_places_the_calls_it_planned() -> None:
-    """Planning without dialling is the failure that looks like success.
-
-    The order flips to QUOTING and the call rows appear, so the portal reads as though the
-    market is open while no phone has rung anywhere.
-    """
-    market = FakeMarket()
-    market.plans = [_plan("call-1", "+523141000001"), _plan("call-2", "+523141000002")]
-    client, _, _, _, dial = build(market=market)
-    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
-    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
-
-    client.post(f"/api/orders/{order_id}/rfq")
-
-    assert [p.call_id for p in dial.batches[0]] == ["call-1", "call-2"]
-
-
-def test_the_carriers_are_dialled_in_one_batch() -> None:
-    """One call to the dialler, not one per carrier: the fan-out is the point of the RFQ."""
-    market = FakeMarket()
-    market.plans = [_plan(f"call-{i}", f"+52314100000{i}") for i in range(1, 4)]
-    client, _, _, _, dial = build(market=market)
-    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
-    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
-
-    client.post(f"/api/orders/{order_id}/rfq")
-
-    assert len(dial.batches) == 1
-    assert len(dial.batches[0]) == 3
-
-
-def test_a_market_with_no_eligible_carrier_dials_nothing() -> None:
-    """An empty plan must not reach the campaign at all."""
-    client, _, _, _, dial = build()
-    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
-    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
-
-    client.post(f"/api/orders/{order_id}/rfq")
-
-    assert dial.batches == []
-
-
-def test_no_mandate_means_no_dial() -> None:
-    """The 409 has to happen before anything rings, not after."""
-    market = FakeMarket()
-    market.plans = [_plan("call-1", "+523141000001")]
-    client, _, _, _, dial = build(market=market)
-    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
-
-    assert client.post(f"/api/orders/{order_id}/rfq").status_code == 409
-    assert dial.batches == []

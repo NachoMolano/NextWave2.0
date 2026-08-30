@@ -132,8 +132,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 log.exception("call.correlation_failed", call_id=call_id, vapi_call_id=vapi_call_id)
         return placed
 
-    async def dial_plans(plans: list[DialPlan]) -> dict[str, str]:
-        """The portal's dialler: the placer and settings are already chosen here."""
+    async def dial_plans(plans: list[DialPlan]) -> object:
+        """The portal's dialler, with the placer and settings already bound."""
         return await dial(plans, placer, settings)
 
     async def sweep() -> list[str]:

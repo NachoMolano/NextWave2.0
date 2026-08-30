@@ -16,9 +16,13 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
-## 2026-08-30T02:57-0500 · ports, store, api, main, vapi · nacho
+## 2026-08-30T02:57-0500 · ports, store, main, vapi · nacho
 
-The RFQ fan-out places calls. Three carriers, one order, three phones ringing.
+Three carriers, one order, three phones ringing -- verified on a live run.
+
+The dial trigger itself is not mine: `3183b8d` landed the same fix on main first and went
+further, claiming the `rfq-planned` event before it plans so a second click cannot re-dial.
+What follows is what this branch adds on top of it.
 
 `Store` gains **`attach_vapi_call_id(call_id, vapi_call_id)`**. A campaign writes the call row
 — order, carrier, frozen negotiation context — before it dials, because the context is what
@@ -29,11 +33,6 @@ conversation correlated to that empty one. On a live call the evidence for a sin
 conversation sat in two rows that never met. Implemented in `store/supabase.py` (update by row
 id — `upsert_call` keys on `vapi_call_id` and would insert rather than correct) and in
 `tests/fakes.py`; the shared store suite covers it against both.
-
-`POST /api/orders/{id}/rfq` now dials. `market.plan_rfq` returns `list[DialPlan]` and
-`start_rfq` discarded it: plans and call rows were written, the order flipped to QUOTING, and
-no phone rang. `create_api_router` takes a `RfqDialler` — a callable, not the campaign, because
-`api` may not import `vapi` — and `main.py` closes over the placer and does the write-back.
 
 `run_campaign` spaces its dials by `_LAUNCH_SPACING_SECONDS`. Three creates in the same
 millisecond left one call ringing with no assistant on it; the same three two seconds apart
@@ -49,7 +48,7 @@ calibrated in the wrong unit, not an authorization hole. `Money` exists to make 
 impossible and the prompt context is the one place that discards it.
 
 → Affects: **Everyone** — `ports.py` grew a method, so any `Store` implementation must add it.
-**Track C** — `create_api_router` takes `dial`. **Track D** — `agent/context.py`'s
+**Track D** — `agent/context.py`'s
 `context_from_order` and `company_profile_from_settings` are exported but imported by nothing;
 the live path uses `market._context_for` and `assistant.profile_from_settings`, and the two
 disagree on date format. One of them is what the next person will read and believe.
@@ -78,6 +77,44 @@ RFQ fan-out — the centre of the brief — has no trigger.
 → Affects: **Track C** — `start_rfq` needs the injected dialler to place the plans it makes.
 **Track E** — `sim_tools --url` and `replay_webhook --url` send no `x-vapi-secret`, so both
 get 401 against a correctly configured server and the live HTTP rung cannot be exercised.
+
+## 2026-08-30T01:52-0500 · frontend · nacho/track-c
+
+The portal, brought over from the old repo's control tower and rewired to `/api`. `dashboard/`
+is now **`frontend/`**, which is a rename away from what BUILD_PLAN section 1 says.
+
+BUILD_PLAN describes it as "existing frontend -- untouched, consumes /api". Neither half was
+true: it was not in this repo at all, and its client called `/operations`,
+`/operations/{id}/workspace` and `/operations/{id}/rfqs/{id}/activate` -- no `/api` prefix and
+an operations/workspace/rfq vocabulary with no counterpart in the ten-table schema. It could
+not have been pointed at this backend.
+
+What carried over: the design system (~280 lines of tokens, and the class names mostly already
+fit -- `.mandate-card`, `.countdown.urgent`, `.offer-card`, `.transcript-line` with its anchor
+column), the shell, hash routing, and the queue then detail then evidence shape. What was
+rewritten: `types.ts` and `api.ts` entirely, and `App.tsx` against the new aggregate. Screens
+are Operations, Operation, Approvals, Carriers, Call evidence.
+
+Verified end to end against a running backend and live Supabase, not merely compiled: granting
+a mandate through the portal produced `mandate_version = 1`, `mandate_set_by = diego@volta.test`,
+`status = quoting` and one `mandate.set:<order>:v1` ledger row. `npm run build` and `oxlint`
+are clean.
+
+Two things worth knowing:
+
+- **CORS does not exist and did not need to.** Vite proxies `/api` and `/health` in
+  development, so the browser makes a same-origin request. A deployed build either ships from
+  the API's origin or needs a narrow allowlist -- `*` is the wrong answer on the surface that
+  carries the only endpoint able to write a price cap. No change to `main.py` was required.
+- **The live store suite had been writing into the demo database.** Seven `OP-TEST-*` orders
+  and twelve test carriers were sitting in the queue against one real order, because cleanup
+  cannot delete an order once an event references it. Removed as table owner. That suite is
+  opt-in and should point at a scratch project, never this one.
+
+Affects: **nobody's files** -- `frontend/` is new and no track owned `dashboard/`. Worth
+knowing anyway: the portal is step 9 of Flow A, so it is on the live demo path.
+
+---
 
 ## 2026-08-30T01:42-0500 · integration, ci · codex
 
