@@ -123,6 +123,107 @@ identity was established, and the agent restating a weekday as an explicit calen
 It is real speech, not synthetic. It sits under `supabase/` only because that is a
 directory I own; move it into your fixtures dir and delete it from there. Note the
 anchors are Twilio stream offsets; Vapi's equivalent is unconfirmed until CP4.
+## 2026-08-30T01:13-0500 · vapi · track-b
+
+Track B. `app/vapi/` is built: assistant composition, the outbound client, the tool server,
+the event webhook, and the parallel dial. No stub in the package raises any more.
+
+**Three signatures changed, all in files Track B owns. Track E wires them.** Phase 0's
+zero-argument factories could not receive their dependencies, so each now takes them
+explicitly rather than reaching for `get_settings()` — `/health` still boots with an empty
+environment, and a test composes a router without one.
+
+```python
+# main.py, replacing the two "Track B:" comment lines
+profile = profile_from_settings(settings)          # app.vapi.assistant
+app.include_router(
+    create_tool_router(model_tools, store, server_secret=settings.vapi_server_secret),
+    prefix="/vapi",
+)
+app.include_router(
+    create_webhook_router(
+        store=store,
+        ledger=call_ledger,                        # tools/calls.py::CallLedger — Track E
+        reporter=report_model,                     # agent/report.py — Track D
+        profile=profile,
+        build_assistant_for=lambda ctx: build_assistant(profile, ctx, settings),
+        escalation_number=settings.escalation_phone_number,
+        server_secret=settings.vapi_server_secret,
+        now=now_utc,
+    ),
+    prefix="/vapi",
+)
+```
+
+`run_campaign(plans, placer, settings, *, profile, sleep=asyncio.sleep)` — `profile` is new
+and required. The assistant is composed per plan, because each `DialPlan.context` carries the
+market state as of dial time; one assistant reused across the fan-out would tell every carrier
+the same thing. `sleep` is injected only so the concurrency backoff is testable.
+
+**`.env` convention, needed before any call is placed.** Vapi wants a provider next to every
+vendor id and `Settings` holds one string per slot, so each is now written `provider/id`:
+
+```
+VAPI_MODEL=openai/gpt-4o          VAPI_VOICE_ID=11labs/burt          VAPI_TRANSCRIBER=deepgram/nova-3
+```
+
+Those three values are illustrative — **verify each against current Vapi docs before filling
+`.env`**. A value without a `/`, or an empty one, raises at composition rather than producing a
+call that connects and cannot speak. `backend/.env.example` is not Track B's file and still
+carries the old bare-id comment; whoever owns it should add the `provider/id` note.
+
+Other decisions worth knowing about:
+
+- **`vapi/` reads through the `Store` protocol.** It still may not import `store/`, and every
+  *write* goes through `tools/` (`CallLedger` owns the call row). The reads are call
+  correlation and the inbound carrier lookup; the two exceptions that write are `save_report`
+  and the escalation `raise_approval`, neither of which has a policy question in it.
+  `test_layering.py` is green — the type comes from `domain`, the instance from `main`.
+- **The tool server returns 401 when `VAPI_SERVER_SECRET` is unset**, not 200. An unset secret
+  means anyone who finds the URL owns the mutation surface. Vapi never sees that 401, so it
+  cannot fail open the way a 500 would.
+- **`transferCall` carries no destinations.** That is what makes Vapi send
+  `transfer-destination-request`, which is the only way the destination is decided by us
+  rather than chosen by the model. `transferPlan.mode="warm-transfer-say-summary"` therefore
+  rides on the destination we return from `webhook.py`, not on the tool definition — a
+  transferPlan can only sit on a destination.
+- **`artifact.messages[].secondsFromStart` above 24h is dropped, not stored.** The reported
+  epoch-value bug would otherwise write a 1.7-billion-second "offset" into evidence.
+  `recording_url` is read from `artifact.recordingUrl`, `artifact.recording` (string) and
+  `artifact.recording.stereoUrl` / `.mono.combinedUrl`, because the fixtures and the current
+  docs disagree about which one exists.
+- **Fixtures are still PROVISIONAL.** No real call has been placed, so CP4 has not happened.
+  A green suite here proves the code is self-consistent, not that it matches what Vapi sends.
+- New test files: `tests/test_toolserver.py`, `tests/test_vapi_webhook.py`,
+  `tests/test_vapi_assistant.py`, `tests/test_vapi_campaign.py`. The last two are outside the
+  two files named in the plan's "Owns" line; they cover `assistant.py` and `campaign.py`,
+  which had no test file assigned. Nobody else owns them.
+
+**Environment trap, not a code change.** `uv run pytest` intermittently dies with
+`ModuleNotFoundError: No module named 'app'` — including on `tests/test_seam.py`, which
+nothing has touched. uv rewrites `.venv/.../_editable_impl_volta.pth` on every sync, and this
+machine's interpreter then ignores it, so the editable install disappears while `uv pip list`
+still reports it. **`uv run python -m pytest` is unaffected** (it puts the working directory on
+`sys.path`) and is what every number below was measured with. `uv sync --reinstall-package
+volta` fixes `uv run pytest` until the next sync. Not root-caused further.
+
+```
+uv run ruff check .        All checks passed!
+uv run mypy app/           Success: no issues found in 34 source files
+uv run python -m pytest    148 passed, 1 xfailed
+```
+
+Definition of done, each pinned by a named test: a raising handler still returns 200 with an
+`error` string (`test_a_raising_handler_still_returns_200_with_an_error_string`); replaying the
+same `end-of-call-report` fixture twice is a no-op and the extraction model runs once
+(`test_replaying_the_same_end_of_call_report_is_a_no_op`); `FakeCallPlacer` records three dials
+from one campaign (`test_three_carriers_are_dialled_from_one_campaign`).
+
+→ Affects: **Track E** — the wiring snippet above, `run_campaign`'s new `profile` argument, and
+`.env.example`. **Track A** — `vapi/assistant.py` renders the argument models in `tools/model.py`
+into the JSON schemas Vapi validates against, so adding a field there changes the tool surface;
+`ModelTools` handler names are dispatched by `getattr`, and a rename breaks the tool server.
+**Everyone** — use `uv run python -m pytest` if `uv run pytest` claims `app` does not exist.
 
 ---
 
