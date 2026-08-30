@@ -460,3 +460,33 @@ async def test_a_planned_call_is_bound_to_the_call_that_was_placed(world: World)
     assert found.id == planned, "the same row, not a second one"
     assert found.order_id == world.order.id, "the context the campaign wrote survives"
     assert await world.store.call_by_vapi_id("pending:rfq:order-1") is None
+
+
+def test_every_order_field_reaches_a_column() -> None:
+    """A field added to Order and not to _order_row is written nowhere and read back empty.
+
+    ``_to_order`` uses ``model_validate``, so the read side picks up a new column for free
+    and the gap only shows on the write. ``released_at`` was added to the model, the intake
+    endpoint set it, the endpoint returned 200 -- and the value was silently dropped on the
+    way to the database, so the release gate refused a container that had just been
+    released. InMemoryStore keeps the whole model, so no other test could see it.
+
+    ``cap`` and ``target`` are the two deliberate exceptions: they are Money objects that map
+    to their own amount and currency columns.
+    """
+    from app.store.supabase import _order_row
+
+    projected = {"cap", "target"}
+    written = set(
+        _order_row(
+            Order(
+                id="order-1",
+                reference="OP-1042",
+                cap=Money(cents=900_000, currency="USD"),
+                target=Money(cents=820_000, currency="USD"),
+            )
+        )
+    )
+
+    missing = set(Order.model_fields) - written - projected
+    assert not missing, f"Order fields never written to a column: {sorted(missing)}"
