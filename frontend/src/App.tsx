@@ -17,6 +17,7 @@ import type {
   NextAction,
   OrderSummary,
   QuoteRow,
+  Session,
   TraceCategory,
   TraceResult,
   TraceRow,
@@ -106,6 +107,16 @@ function humanise(value: string): string {
 
 export default function App() {
   const [route, navigate] = useRoute()
+  const [session, setSession] = useState<Session | null>(null)
+
+  // Whose name the next approval will carry. Worth stating rather than leaving an operator
+  // to find out afterwards from the audit trail.
+  useEffect(() => {
+    voltaApi
+      .getSession()
+      .then(setSession)
+      .catch(() => setSession(null))
+  }, [])
   const [authenticated, setAuthenticated] = useState(hasPortalToken)
   const [token, setToken] = useState('')
 
@@ -172,6 +183,18 @@ export default function App() {
           <span className="source-dot" />
           <span>Live</span>
           <small>Every figure on this screen came from the API. Nothing here is fixture data.</small>
+          {session && (
+            <>
+              <span className="source-dot source-dot-actor" />
+              <span>Acting as {session.actor}</span>
+              {session.shared_token && (
+                <small>
+                  Shared token: this name is the deployment&rsquo;s, not a person who signed
+                  in. Mandates and awards are recorded against it.
+                </small>
+              )}
+            </>
+          )}
         </div>
       </aside>
 
@@ -1365,7 +1388,6 @@ const PROFILE_SECTIONS: {
 function ProfilePage() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null)
   const [draft, setDraft] = useState<Partial<BusinessProfile>>({})
-  const [updatedBy, setUpdatedBy] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -1392,7 +1414,7 @@ function ProfilePage() {
     setBusy(true)
     setNotice(null)
     try {
-      const body = { ...draft, updated_by: updatedBy } as BusinessProfileUpdate
+      const body = { ...draft } as BusinessProfileUpdate
       const saved = await voltaApi.updateProfile(body)
       setProfile(saved)
       setDraft({})
@@ -1454,27 +1476,18 @@ function ProfilePage() {
       </div>
 
       <section className="surface configuration-section profile-save">
-        <p className="eyebrow">Who is making this change</p>
+        <p className="eyebrow">Saving</p>
         <p className="configuration-note">
           The warehouse address is spoken to carriers and the agent&rsquo;s name is how it
           introduces itself. A change to either changes what the system says on a recorded
-          line, so it is recorded against a person — the same reason a mandate is.
+          line, so it is recorded against whoever is signed in — taken from the credential,
+          not from a text box, because a typed name authenticates nothing.
         </p>
-        <input
-          className="field"
-          value={updatedBy}
-          placeholder="ops@volta.test"
-          onChange={(e) => setUpdatedBy(e.target.value)}
-        />
         <div className="dialog-actions">
           <button className="secondary-button" disabled={!dirty || busy} onClick={load}>
             Discard
           </button>
-          <button
-            className="primary-button"
-            disabled={!dirty || busy || !updatedBy.trim()}
-            onClick={save}
-          >
+          <button className="primary-button" disabled={!dirty || busy} onClick={save}>
             {dirty ? `Save ${Object.keys(draft).length} change(s)` : 'No changes'}
           </button>
         </div>

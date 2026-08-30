@@ -42,6 +42,7 @@ __all__ = [
     "NextAction",
     "OrderAggregate",
     "OrderSummary",
+    "Session",
     "SetMandateRequest",
     "SweepResult",
 ]
@@ -301,4 +302,25 @@ class BusinessProfileUpdate(BaseModel):
     warehouse_hours: str | None = None
     warehouse_notes: str | None = None
 
-    updated_by: str = Field(min_length=1, description="Required. Who is making the change.")
+    # No `updated_by` here on purpose. It comes from the credential, not from the form -- a
+    # name typed into a text box is unauthenticated, and anyone could type anyone. The mandate
+    # and approval paths already work this way; this one was the odd exception.
+
+
+class Session(BaseModel):
+    """Who the portal thinks you are.
+
+    Exposed so the portal can say *acting as X* rather than leaving an operator to guess whose
+    name their next approval will carry. It is also how the sign-in screen can tell a good
+    token from a bad one without pretending to fetch something else.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    actor: str = Field(description="Recorded against every mandate, award and profile change.")
+    shared_token: bool = Field(
+        default=True,
+        description="True while the deployment authenticates with one shared token. The actor "
+        "is then the deployment's configured identity, not a person who signed in -- so this "
+        "attribution is only as specific as the token is. Per-person tokens make it true.",
+    )

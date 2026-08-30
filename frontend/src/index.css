@@ -409,3 +409,7 @@ h3 { font-size: 20px; }
 .operation-row.operation-soon { border-left: 3px solid #d8a33c; }
 .operation-row.operation-waiting { border-left: 3px solid #16706a; }
 .operation-row.operation-none { border-left: 3px solid transparent; }
+
+/* Who you are acting as. The audit trail should not be the first place an operator learns
+   whose name went on their approval. */
+.source-dot-actor { background: var(--blue); }

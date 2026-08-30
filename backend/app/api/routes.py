@@ -45,6 +45,7 @@ from app.api.schemas import (
     NewOrderRequest,
     OrderAggregate,
     OrderSummary,
+    Session,
     SetMandateRequest,
     SweepResult,
 )
@@ -446,16 +447,27 @@ def create_api_router(
             )
         return BusinessProfile.model_validate(row)
 
+    @router.get("/session", response_model=Session)
+    async def get_session(actor: Annotated[str, Depends(authenticate)]) -> Session:
+        """Who this token is. Lets the portal show whose name an action will carry."""
+        return Session(actor=actor, shared_token=True)
+
     @router.put("/profile", response_model=BusinessProfile)
-    async def update_profile(body: BusinessProfileUpdate) -> BusinessProfile:
+    async def update_profile(
+        body: BusinessProfileUpdate, actor: Annotated[str, Depends(authenticate)]
+    ) -> BusinessProfile:
         """Edit the profile. `updated_by` is required, not decorative.
 
         The warehouse address is read out loud to carriers and the agent's name is how it
         introduces itself. A change to either is a change to what the system says on a
-        recorded line, so it carries whoever made it -- the same argument as the mandate.
+        recorded line, so it carries whoever made it -- the same argument as the mandate, and
+        taken from the same place: the credential. A name typed into a form authenticates
+        nothing.
         """
         values: dict[str, object] = body.model_dump(exclude_none=True)
         values["updated_at"] = now().isoformat()
+        # From the credential, not the body. Same rule as the mandate and the award.
+        values["updated_by"] = actor
         with _guard():
             row = await store.save_company_profile(values)
         return BusinessProfile.model_validate(row)

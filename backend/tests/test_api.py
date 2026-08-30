@@ -40,6 +40,9 @@ from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+#: The identity the configured token stands for. Every action is recorded against it.
+PORTAL_ACTOR = "ops@volta.test"
 AUTH = {"Authorization": "Bearer portal-test-token"}
 
 
@@ -682,34 +685,35 @@ def test_editing_the_profile_records_who_did_it() -> None:
 
     body = client.put(
         "/api/profile",
-        json={
-            "warehouse_address": "900 Channelside Dr",
-            "warehouse_city": "Tampa",
-            "updated_by": "diego@volta.test",
-        },
+        json={"warehouse_address": "900 Channelside Dr", "warehouse_city": "Tampa"},
     ).json()
 
     assert body["warehouse_address"] == "900 Channelside Dr"
-    assert body["updated_by"] == "diego@volta.test"
+    # From the credential, never from the body. A name typed into a form authenticates
+    # nothing, and this is the row somebody reads when they ask who changed the address the
+    # agent now reads out on a recorded line.
+    assert body["updated_by"] == PORTAL_ACTOR
     assert store.profile is not None
     assert store.profile["warehouse_address"] == "900 Channelside Dr"
 
 
-def test_an_edit_without_a_name_is_rejected() -> None:
+def test_a_body_cannot_claim_to_be_somebody_else() -> None:
+    """An `updated_by` in the body is ignored; the credential decides who acted."""
     client, _, _, _, _ = build()
 
-    response = client.put("/api/profile", json={"warehouse_city": "Orlando"})
+    body = client.put(
+        "/api/profile",
+        json={"warehouse_city": "Orlando", "updated_by": "somebody.else@example.com"},
+    ).json()
 
-    assert response.status_code == 422
+    assert body["updated_by"] == PORTAL_ACTOR
 
 
 def test_a_partial_edit_leaves_the_rest_alone() -> None:
     """A form edits what it edits. Absent fields are not an instruction to blank them."""
     client, _, _, _, _ = build()
 
-    body = client.put(
-        "/api/profile", json={"warehouse_hours": "07:00-19:00", "updated_by": "ops"}
-    ).json()
+    body = client.put("/api/profile", json={"warehouse_hours": "07:00-19:00"}).json()
 
     assert body["warehouse_hours"] == "07:00-19:00"
     assert body["display_name"] == "Pacific Textiles"

@@ -410,7 +410,14 @@ export interface BusinessProfile {
   updated_by: string | null
 }
 
-/** Every field optional except the name of whoever is making the change. */
-export type BusinessProfileUpdate = Partial<Omit<BusinessProfile, 'updated_at' | 'updated_by'>> & {
-  updated_by: string
+/**
+ * Every field optional. `updated_by` is deliberately absent: the server takes it from the
+ * credential, because a name typed into a form authenticates nothing.
+ */
+export type BusinessProfileUpdate = Partial<Omit<BusinessProfile, 'updated_at' | 'updated_by'>>
+
+/** Who the portal thinks you are, and how specific that claim really is. */
+export interface Session {
+  actor: string
+  shared_token: boolean
 }

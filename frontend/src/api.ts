@@ -8,6 +8,7 @@ import type {
   Comparison,
   OrderAggregate,
   OrderSummary,
+  Session,
   SetMandateRequest,
   SweepResult,
   TraceRow,
@@ -113,6 +114,9 @@ export const voltaApi = {
   getTrace: (callId: string): Promise<TraceRow[]> => request(`/api/calls/${callId}/trace`),
 
   listCarriers: (): Promise<Carrier[]> => request('/api/carriers'),
+
+  /** Who this token is. Also how the sign-in screen tells a good token from a bad one. */
+  getSession: (): Promise<Session> => request('/api/session'),
 
   getProfile: (): Promise<BusinessProfile> => request('/api/profile'),
 
