@@ -18,6 +18,7 @@ import pytest
 from app.config import Settings
 from app.domain import CallContext, CallPhase
 from app.vapi.assistant import (
+    STOP_SPEAKING_PLAN,
     TOOL_ARGUMENT_MODELS,
     WARM_TRANSFER_PLAN,
     build_assistant,
@@ -192,6 +193,92 @@ def test_the_tool_timeout_is_stated_rather_than_inherited() -> None:
     for tool in build_tool_definitions(_settings(vapi_tool_timeout_seconds=45)):
         if tool["type"] == "function":
             assert tool["server"]["timeoutSeconds"] == 45
+
+
+# ------------------------------------------------------------------------------ turn taking
+
+
+def test_turn_taking_is_stated_rather_than_inherited() -> None:
+    """Both plans on the wire, every time.
+
+    Send nothing and Vapi endpoints on transcription punctuation: a carrier who pauses for
+    breath gets a full stop from the transcriber and is talked over 100ms later. The
+    defaults are documented but not contractual, so neither plan is left to them.
+    """
+    assistant = build_assistant(PROFILE, _context(), _settings())
+
+    start = assistant["startSpeakingPlan"]
+    assert isinstance(start, dict)
+    assert start["smartEndpointingPlan"]["provider"], "a model decides, not punctuation"
+    assert assistant["stopSpeakingPlan"]["numWords"] == 0, "yield on voice, not on words"
+
+
+def test_a_backchannel_does_not_cut_the_recap_short() -> None:
+    """ "mm-hmm" through the terms read-back is agreement, not an interruption.
+
+    The recap is what ``confirm_preagreement`` attests to. If a carrier's acknowledgement
+    stops the agent mid-sentence, the terms they said yes to are not the terms we read.
+    """
+    acknowledgements = build_assistant(PROFILE, _context(), _settings())["stopSpeakingPlan"][
+        "acknowledgementPhrases"
+    ]
+
+    assert {"mm-hmm", "okay", "right"} <= set(acknowledgements)
+
+
+def test_a_number_still_being_spoken_is_not_a_finished_turn() -> None:
+    """Invariant 8, enforced at the endpointing layer.
+
+    "eight" then "five hundred" is one amount. Endpointing on the pause between them turns
+    8500 into 8, and the agent proposes against a figure the carrier never said.
+    """
+    rules = build_assistant(PROFILE, _context(), _settings())["startSpeakingPlan"][
+        "customEndpointingRules"
+    ]
+
+    assert rules, "no rule means the punctuation heuristic decides mid-number"
+    assert all(rule["type"] == "user" for rule in rules)
+    assert all(rule["timeoutSeconds"] >= 1.0 for rule in rules)
+
+
+def test_the_endpointing_provider_follows_the_language_when_unset() -> None:
+    """``livekit`` is English-only and degrades silently on anything else.
+
+    Nothing in the logs says the smart model was ignored, so the Spanish call just feels
+    worse for reasons nobody can name. Derived rather than defaulted for that reason.
+    """
+    english = build_assistant(PROFILE, _context(), _settings())
+    spanish_settings = _settings(company_primary_language="es-MX")
+    spanish = build_assistant(profile_from_settings(spanish_settings), _context(), spanish_settings)
+
+    assert english["startSpeakingPlan"]["smartEndpointingPlan"]["provider"] == "livekit"
+    assert spanish["startSpeakingPlan"]["smartEndpointingPlan"]["provider"] == "vapi"
+
+
+def test_an_explicit_endpointing_provider_wins() -> None:
+    """The ids move. Trying a new one must not need a code change."""
+    settings = _settings(vapi_endpointing_provider="krisp")
+
+    assistant = build_assistant(PROFILE, _context(), settings)
+
+    assert assistant["startSpeakingPlan"]["smartEndpointingPlan"]["provider"] == "krisp"
+
+
+def test_the_wait_before_speaking_comes_from_config() -> None:
+    settings = _settings(vapi_start_speaking_wait_seconds=0.9)
+
+    assistant = build_assistant(PROFILE, _context(), settings)
+
+    assert assistant["startSpeakingPlan"]["waitSeconds"] == 0.9
+
+
+def test_one_calls_plan_cannot_be_edited_into_the_next() -> None:
+    """The plan is a module constant. A payload that shares its list shares its mutations."""
+    assistant = build_assistant(PROFILE, _context(), _settings())
+
+    assistant["stopSpeakingPlan"]["acknowledgementPhrases"].append("whatever you say")
+
+    assert "whatever you say" not in STOP_SPEAKING_PLAN["acknowledgementPhrases"]
 
 
 # ----------------------------------------------------------------------------- the leaks
