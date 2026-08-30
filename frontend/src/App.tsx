@@ -1,0 +1,1000 @@
+import { useCallback, useEffect, useState } from 'react'
+
+import { ApiError, voltaApi } from './api'
+import type {
+  Approval,
+  CallDetail,
+  CallRecord,
+  Carrier,
+  Commitment,
+  MandateView,
+  Money,
+  OrderAggregate,
+  OrderSummary,
+  QuoteRow,
+} from './types'
+
+/* ------------------------------------------------------------------ routing */
+
+type Route =
+  | { name: 'orders' }
+  | { name: 'order'; orderId: string }
+  | { name: 'call'; orderId: string; callId: string }
+  | { name: 'approvals' }
+  | { name: 'carriers' }
+
+function parseRoute(): Route {
+  const path = window.location.hash.replace(/^#/, '') || '/'
+  const parts = path.split('/').filter(Boolean)
+  if (parts[0] === 'orders' && parts[1] && parts[2] === 'calls' && parts[3]) {
+    return { name: 'call', orderId: parts[1], callId: parts[3] }
+  }
+  if (parts[0] === 'orders' && parts[1]) return { name: 'order', orderId: parts[1] }
+  if (parts[0] === 'approvals') return { name: 'approvals' }
+  if (parts[0] === 'carriers') return { name: 'carriers' }
+  return { name: 'orders' }
+}
+
+function useRoute(): [Route, (path: string) => void] {
+  const [route, setRoute] = useState<Route>(parseRoute)
+  useEffect(() => {
+    const onChange = () => setRoute(parseRoute())
+    window.addEventListener('hashchange', onChange)
+    return () => window.removeEventListener('hashchange', onChange)
+  }, [])
+  const navigate = useCallback((path: string) => {
+    window.location.hash = path
+  }, [])
+  return [route, navigate]
+}
+
+/* ---------------------------------------------------------------- formatting */
+
+function formatMoney(money: Money | null): string {
+  if (!money) return '—'
+  return `${(money.cents / 100).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} ${money.currency}`
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatDay(value: string | null): string {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+/** Anchors are what make a claim checkable, so they are rendered, not hidden. */
+function formatOffset(offsetMs: number | null): string {
+  if (offsetMs === null) return '--:--'
+  const total = Math.floor(offsetMs / 1000)
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+}
+
+function statusClass(value: string): string {
+  return `status-badge status-${value.replace(/_/g, '-')}`
+}
+
+function humanise(value: string): string {
+  return value.replace(/_/g, ' ')
+}
+
+/* --------------------------------------------------------------------- shell */
+
+export default function App() {
+  const [route, navigate] = useRoute()
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <a className="brand" href="#/">
+          <span className="brand-mark">V</span>
+          Volta
+        </a>
+        <p className="eyebrow sidebar-eyebrow">Drayage control</p>
+        <nav className="navigation">
+          <NavItem
+            active={route.name === 'orders' || route.name === 'order' || route.name === 'call'}
+            label="Operations"
+            onClick={() => navigate('/')}
+          />
+          <NavItem
+            active={route.name === 'approvals'}
+            label="Approvals"
+            onClick={() => navigate('/approvals')}
+          />
+          <NavItem
+            active={route.name === 'carriers'}
+            label="Carriers"
+            onClick={() => navigate('/carriers')}
+          />
+        </nav>
+        <div className="sidebar-footer">
+          <span className="source-dot" />
+          <span>Live</span>
+          <small>Every figure on this screen came from the API. Nothing here is fixture data.</small>
+        </div>
+      </aside>
+
+      <div className="content-shell">
+        <header className="topbar">
+          <p className="topbar-copy">Speech proposes. Policy decides.</p>
+          <span className="source-label">source · /api</span>
+        </header>
+        {route.name === 'orders' && <OrdersPage onOpen={(id) => navigate(`/orders/${id}`)} />}
+        {route.name === 'order' && (
+          <OrderDetail
+            orderId={route.orderId}
+            onBack={() => navigate('/')}
+            onOpenCall={(callId) => navigate(`/orders/${route.orderId}/calls/${callId}`)}
+          />
+        )}
+        {route.name === 'call' && (
+          <CallEvidencePage
+            callId={route.callId}
+            onBack={() => navigate(`/orders/${route.orderId}`)}
+          />
+        )}
+        {route.name === 'approvals' && <ApprovalsPage onOpen={(id) => navigate(`/orders/${id}`)} />}
+        {route.name === 'carriers' && <CarriersPage />}
+      </div>
+    </div>
+  )
+}
+
+function NavItem({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button className={active ? 'nav-item nav-item-active' : 'nav-item'} onClick={onClick}>
+      <span className="nav-indicator" />
+      {label}
+    </button>
+  )
+}
+
+function Loading({ what }: { what: string }) {
+  return (
+    <div className="loading-state">
+      <span className="loading-mark" />
+      loading {what}
+    </div>
+  )
+}
+
+function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className="page">
+      <div className="error-state">
+        <h2>That did not work</h2>
+        <p>{message}</p>
+        {onRetry && (
+          <button className="secondary-button" onClick={onRetry}>
+            Try again
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------- the queue */
+
+function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
+  const [orders, setOrders] = useState<OrderSummary[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    voltaApi
+      .listOrders()
+      .then((value) => {
+        setOrders(value)
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [])
+
+  useEffect(load, [load])
+
+  if (error) return <ErrorState message={error} onRetry={load} />
+  if (!orders) return <Loading what="operations" />
+
+  return (
+    <div className="page">
+      <div className="page-heading">
+        <p className="eyebrow">Operations</p>
+        <h1>
+          The clock is <em>already running</em>
+        </h1>
+        <p>
+          Demurrage starts at discharge. Nobody decides it and nothing pauses it, which is why
+          the countdown is the first thing on the row.
+        </p>
+      </div>
+
+      <section className="queue-section">
+        <div className="queue-heading">
+          <div>
+            <p className="eyebrow">Queue</p>
+            <h2>Containers on the ground</h2>
+          </div>
+          <span className="count">{orders.length}</span>
+        </div>
+
+        {orders.length === 0 ? (
+          <div className="empty-market">
+            <strong>Nothing received yet.</strong>
+            <p>Run the seed, or POST an order to /api/orders.</p>
+          </div>
+        ) : (
+          <div className="operation-list">
+            {orders.map((order) => (
+              <button className="operation-row" key={order.id} onClick={() => onOpen(order.id)}>
+                <div className="operation-route">
+                  <span className="reference">{order.reference}</span>
+                  <strong>
+                    {order.origin ?? '—'} → {order.destination ?? '—'}
+                  </strong>
+                  <span>{order.container_number ?? 'no container number'}</span>
+                </div>
+                <div className="operation-stage">
+                  <span className={statusClass(order.status)}>{humanise(order.status)}</span>
+                  <span>
+                    {order.mandate.is_granted
+                      ? `Ceiling ${formatMoney(order.mandate.cap)} · v${order.mandate.version}`
+                      : 'No mandate — nothing is authorized'}
+                  </span>
+                  {order.open_approvals > 0 && (
+                    <span className="reference">
+                      {order.open_approvals} waiting on a person
+                    </span>
+                  )}
+                </div>
+                <div
+                  className={
+                    order.demurrage.is_overdue || (order.demurrage.days_remaining ?? 99) <= 1
+                      ? 'operation-clock operation-clock-urgent'
+                      : 'operation-clock'
+                  }
+                >
+                  <strong>
+                    {order.demurrage.days_remaining === null
+                      ? '—'
+                      : `${order.demurrage.days_remaining}d`}
+                  </strong>
+                  <small>
+                    {order.demurrage.is_overdue ? 'past last free day' : 'until demurrage'}
+                  </small>
+                </div>
+                <span className="row-arrow">→</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------ order detail */
+
+function OrderDetail({
+  orderId,
+  onBack,
+  onOpenCall,
+}: {
+  orderId: string
+  onBack: () => void
+  onOpenCall: (callId: string) => void
+}) {
+  const [data, setData] = useState<OrderAggregate | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ text: string; bad: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    voltaApi
+      .getOrder(orderId)
+      .then((value) => {
+        setData(value)
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [orderId])
+
+  useEffect(load, [load])
+
+  // The market moves while a person is looking at it: calls end, quotes arrive, an approval
+  // is raised. Polling keeps the screen honest without the operator reaching for reload.
+  useEffect(() => {
+    const poll = window.setInterval(load, 5000)
+    return () => window.clearInterval(poll)
+  }, [load])
+
+  const act = useCallback(
+    async (what: string, run: () => Promise<unknown>) => {
+      setBusy(true)
+      setNotice(null)
+      try {
+        await run()
+        setNotice({ text: what, bad: false })
+        load()
+      } catch (e) {
+        const err = e as ApiError
+        setNotice({ text: err.message, bad: true })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [load],
+  )
+
+  if (error) return <ErrorState message={error} onRetry={load} />
+  if (!data) return <Loading what="the operation" />
+
+  const { order, mandate, demurrage, quotes, calls, commitment, approvals } = data
+
+  return (
+    <div className="page">
+      <button className="back-button" onClick={onBack}>
+        ← All operations
+      </button>
+
+      {notice && (
+        <div className={notice.bad ? 'command-notice command-denied' : 'command-notice'}>
+          <span>{notice.bad ? '!' : '✓'}</span>
+          <p>{notice.text}</p>
+          <button onClick={() => setNotice(null)}>×</button>
+        </div>
+      )}
+
+      <div className="operation-hero">
+        <div>
+          <p className="eyebrow reference">{order.reference}</p>
+          <h1>
+            {order.origin ?? '—'} → {order.destination ?? '—'}
+          </h1>
+          <p>
+            {order.cargo ?? 'cargo unstated'} · {order.equipment ?? 'equipment unstated'} ·{' '}
+            {order.container_number ?? 'no container number'}
+          </p>
+        </div>
+        <div className="hero-state">
+          <span className={statusClass(order.status)}>{humanise(order.status)}</span>
+          <span className={demurrage.is_overdue ? 'countdown urgent' : 'countdown'}>
+            {demurrage.days_remaining === null
+              ? 'no clock'
+              : `${demurrage.days_remaining}d to last free day`}
+          </span>
+          <small>Last free day {formatDay(demurrage.last_free_day)}</small>
+        </div>
+      </div>
+
+      <div className="detail-grid">
+        <div className="detail-main">
+          <MarketPanel
+            quotes={quotes}
+            mandateGranted={mandate.is_granted}
+            busy={busy}
+            onStart={() =>
+              act('The market is open. Three carriers are being dialled.', () =>
+                voltaApi.startRfq(orderId),
+              )
+            }
+          />
+
+          <section className="surface call-section">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Evidence</p>
+                <h2>Calls</h2>
+              </div>
+              <span className="count">{calls.length}</span>
+            </div>
+            {calls.length === 0 ? (
+              <p className="empty-copy">No calls yet.</p>
+            ) : (
+              <div className="compact-calls">
+                {calls.map((call) => (
+                  <CallRow key={call.id} call={call} onOpen={() => onOpenCall(String(call.id))} />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="detail-rail">
+          <MandatePanel
+            mandate={mandate}
+            busy={busy}
+            onSet={(body) =>
+              act(`Mandate v${mandate.version + 1} recorded.`, () =>
+                voltaApi.setMandate(orderId, body),
+              )
+            }
+          />
+
+          {approvals.length > 0 && (
+            <section className="surface assignment-card">
+              <p className="eyebrow">Waiting on a person</p>
+              <h2>{approvals.length} to decide</h2>
+              {approvals.map((approval) => (
+                <ApprovalCard
+                  key={approval.id}
+                  approval={approval}
+                  busy={busy}
+                  onDecide={(status, decidedBy) =>
+                    act(`Approval ${status}.`, () =>
+                      voltaApi.decideApproval(String(approval.id), {
+                        status,
+                        decided_by: decidedBy,
+                        note: null,
+                      }),
+                    )
+                  }
+                />
+              ))}
+            </section>
+          )}
+
+          <CommitmentCard commitment={commitment} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ mandate */
+
+function MandatePanel({
+  mandate,
+  busy,
+  onSet,
+}: {
+  mandate: MandateView
+  busy: boolean
+  onSet: (body: import('./types').SetMandateRequest) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [cap, setCap] = useState('9000')
+  const [currency, setCurrency] = useState('USD')
+  const [setBy, setSetBy] = useState('')
+
+  const submit = () => {
+    const now = new Date()
+    const later = new Date(now.getTime() + 2 * 24 * 3600 * 1000)
+    onSet({
+      cap_amount_cents: Math.round(Number(cap) * 100),
+      cap_currency: currency.toUpperCase(),
+      target_amount_cents: null,
+      pickup_not_before: now.toISOString(),
+      pickup_not_after: later.toISOString(),
+      delivery_deadline: null,
+      commitment_mode: 'human_escalation',
+      set_by: setBy,
+    })
+    setOpen(false)
+  }
+
+  return (
+    <section className="action-panel">
+      <p className="eyebrow">Authority</p>
+      <h2>{mandate.is_granted ? 'Mandate granted' : 'Nothing is authorized'}</h2>
+
+      {mandate.is_granted ? (
+        <>
+          <div className="mandate-card">
+            <span className="eyebrow">Ceiling · version {mandate.version}</span>
+            <strong>{formatMoney(mandate.cap)}</strong>
+            <span>
+              Granted by {mandate.set_by} · {formatDate(mandate.set_at)}
+            </span>
+          </div>
+          <p className="action-note">
+            The agent never says this figure out loud. Policy compares against it on every
+            proposal and copies it into the decision by value, so raising it later cannot
+            rewrite an earlier refusal.
+          </p>
+        </>
+      ) : (
+        <p className="action-note">
+          No mandate is not &ldquo;no limit&rdquo;. It is a permission nobody granted, and until
+          a person grants it the agent cannot open a market or agree to anything.
+        </p>
+      )}
+
+      {open ? (
+        <div className="mandate-card">
+          <label className="eyebrow" htmlFor="cap">
+            Ceiling
+          </label>
+          <input
+            id="cap"
+            className="field"
+            value={cap}
+            inputMode="decimal"
+            onChange={(e) => setCap(e.target.value)}
+          />
+          <label className="eyebrow" htmlFor="currency">
+            Currency
+          </label>
+          <input
+            id="currency"
+            className="field"
+            value={currency}
+            maxLength={3}
+            onChange={(e) => setCurrency(e.target.value)}
+          />
+          <label className="eyebrow" htmlFor="setby">
+            Your name — this is the audit record
+          </label>
+          <input
+            id="setby"
+            className="field"
+            value={setBy}
+            placeholder="ops@volta.test"
+            onChange={(e) => setSetBy(e.target.value)}
+          />
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+            <button
+              className="primary-button"
+              disabled={busy || !setBy.trim() || !cap.trim()}
+              onClick={submit}
+            >
+              {mandate.is_granted ? 'Raise the ceiling' : 'Grant the mandate'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button className="primary-button" disabled={busy} onClick={() => setOpen(true)}>
+          {mandate.is_granted ? 'Raise the ceiling' : 'Grant a mandate'}
+        </button>
+      )}
+    </section>
+  )
+}
+
+/* ------------------------------------------------------------------- market */
+
+function MarketPanel({
+  quotes,
+  mandateGranted,
+  busy,
+  onStart,
+}: {
+  quotes: QuoteRow[]
+  mandateGranted: boolean
+  busy: boolean
+  onStart: () => void
+}) {
+  // Superseded rows are shown, never hidden: they said 8,500 and then they said 9,200, and
+  // both were said. A market that displays only the current number has deleted the evidence.
+  const live = quotes.filter((q) => q.status !== 'superseded')
+  const superseded = quotes.filter((q) => q.status === 'superseded')
+
+  return (
+    <section className="surface">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Market</p>
+          <h2>Quotes</h2>
+        </div>
+        <span className="count">{quotes.length}</span>
+      </div>
+
+      {quotes.length === 0 && (
+        <div className="empty-market">
+          <strong>No quotes yet.</strong>
+          <p>
+            {mandateGranted
+              ? 'Open the market to dial carriers in parallel.'
+              : 'A mandate has to exist before anyone is called.'}
+          </p>
+          <div className="offer-action">
+            <button className="secondary-button" disabled={!mandateGranted || busy} onClick={onStart}>
+              Start quoting
+            </button>
+          </div>
+        </div>
+      )}
+
+      {live.length > 0 && (
+        <div className="offer-list">
+          {live.map((quote) => (
+            <QuoteCard key={quote.id} quote={quote} />
+          ))}
+        </div>
+      )}
+
+      {superseded.length > 0 && (
+        <>
+          <p className="eyebrow" style={{ marginTop: 24 }}>
+            Superseded — kept on purpose
+          </p>
+          <div className="offer-list">
+            {superseded.map((quote) => (
+              <QuoteCard key={quote.id} quote={quote} />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+function QuoteCard({ quote }: { quote: QuoteRow }) {
+  return (
+    <article className={quote.status === 'accepted' ? 'offer-card offer-recommended' : 'offer-card'}>
+      <div className="offer-heading">
+        <div>
+          <p className="eyebrow">Quote</p>
+          <h3>{formatMoney(quote.amount)}</h3>
+        </div>
+        {quote.status === 'accepted' && <span className="recommendation">Awarded</span>}
+      </div>
+
+      <div className="offer-metrics">
+        <div>
+          <span>Pickup</span>
+          <strong>{formatDate(quote.pickup_at)}</strong>
+        </div>
+        <div>
+          <span>Equipment</span>
+          <strong>{quote.equipment}</strong>
+        </div>
+        <div>
+          <span>Total is final</span>
+          <strong>{quote.cost_is_final ? 'Yes' : 'No'}</strong>
+        </div>
+      </div>
+
+      {!quote.cost_is_final && (
+        <p>
+          The carrier did not confirm this is everything. A total that is not final cannot be
+          authorized — &ldquo;plus tolls&rdquo; is an open number.
+        </p>
+      )}
+
+      <div className="offer-footer">
+        <span className={statusClass(quote.status)}>{humanise(quote.status)}</span>
+        <span>said at {formatOffset(quote.anchor_ms)} · valid to {formatDate(quote.valid_until)}</span>
+      </div>
+    </article>
+  )
+}
+
+/* --------------------------------------------------------------- approvals */
+
+function ApprovalCard({
+  approval,
+  busy,
+  onDecide,
+}: {
+  approval: Approval
+  busy: boolean
+  onDecide: (status: 'approved' | 'rejected', decidedBy: string) => void
+}) {
+  const [decidedBy, setDecidedBy] = useState('')
+
+  return (
+    <div className="snapshot">
+      <strong>{humanise(approval.kind)}</strong>
+      <span>{humanise(approval.reason)}</span>
+      <small>Raised {formatDate(approval.raised_at)}</small>
+      <input
+        className="field"
+        value={decidedBy}
+        placeholder="your name — recorded against the decision"
+        onChange={(e) => setDecidedBy(e.target.value)}
+      />
+      <div className="dialog-actions">
+        <button
+          className="secondary-button"
+          disabled={busy || !decidedBy.trim()}
+          onClick={() => onDecide('rejected', decidedBy)}
+        >
+          Reject
+        </button>
+        <button
+          className="primary-button"
+          disabled={busy || !decidedBy.trim()}
+          onClick={() => onDecide('approved', decidedBy)}
+        >
+          Approve
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ApprovalsPage({ onOpen }: { onOpen: (orderId: string) => void }) {
+  const [approvals, setApprovals] = useState<Approval[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    voltaApi
+      .listApprovals()
+      .then((value) => {
+        setApprovals(value)
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [])
+
+  useEffect(load, [load])
+
+  if (error) return <ErrorState message={error} onRetry={load} />
+  if (!approvals) return <Loading what="the inbox" />
+
+  return (
+    <div className="page">
+      <div className="page-heading">
+        <p className="eyebrow">Approvals</p>
+        <h1>
+          What a person <em>must</em> look at
+        </h1>
+        <p>
+          Award decisions, mid-call escalations and incidents are the same request from here:
+          somebody has to decide. That is why they are one queue and not three.
+        </p>
+      </div>
+
+      {approvals.length === 0 ? (
+        <div className="empty-market">
+          <strong>Nothing is waiting.</strong>
+          <p>The agent has not needed a person since you last looked.</p>
+        </div>
+      ) : (
+        <div className="operation-list">
+          {approvals.map((approval) => (
+            <button
+              className="operation-row"
+              key={approval.id}
+              onClick={() => approval.order_id && onOpen(approval.order_id)}
+            >
+              <div className="operation-route">
+                <span className="reference">{humanise(approval.kind)}</span>
+                <strong>{humanise(approval.reason)}</strong>
+                <span>Raised {formatDate(approval.raised_at)}</span>
+              </div>
+              <div className="operation-stage">
+                <span className={statusClass(approval.status)}>{humanise(approval.status)}</span>
+              </div>
+              <div className="operation-clock">
+                <small>open</small>
+              </div>
+              <span className="row-arrow">→</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------- commitment */
+
+function CommitmentCard({ commitment }: { commitment: Commitment | null }) {
+  if (!commitment) {
+    return (
+      <section className="surface assignment-card">
+        <p className="eyebrow">Commitment</p>
+        <h2>Nothing is booked</h2>
+        <p className="assignment-pending">
+          No commitment exists for this operation. Until one does, nobody has been told they have
+          the load.
+        </p>
+      </section>
+    )
+  }
+
+  const booked = commitment.state === 'committed' || commitment.state === 'executed'
+
+  return (
+    <section className="surface assignment-card">
+      <p className="eyebrow">Commitment</p>
+      <h2>{booked ? 'Booked' : 'Not booked'}</h2>
+      <span className={statusClass(commitment.state)}>{humanise(commitment.state)}</span>
+      <p className="commitment-copy">
+        {booked
+          ? 'The written recap was delivered. That delivery is what promoted this commitment.'
+          : 'A verbal agreement is on record, but the recap has not been confirmed delivered. Until it is, this is not a booking.'}
+      </p>
+      <dl>
+        <div>
+          <dt>Agreed at</dt>
+          <dd>{formatOffset(commitment.evidence_anchor_ms)}</dd>
+        </div>
+        <div>
+          <dt>Evidence call</dt>
+          <dd>{commitment.evidence_call_id.slice(0, 8)}</dd>
+        </div>
+      </dl>
+      <span className="recap-status">anchor required · no offset, no commitment</span>
+    </section>
+  )
+}
+
+/* ------------------------------------------------------------------- calls */
+
+function CallRow({ call, onOpen }: { call: CallRecord; onOpen: () => void }) {
+  return (
+    <button className="call-row" onClick={onOpen}>
+      <div>
+        <strong>
+          {humanise(String(call.phase))} · {call.direction}
+        </strong>
+        <small>{call.to_number ?? call.from_number ?? 'unknown number'}</small>
+      </div>
+      <div className="call-meta">
+        <span className={statusClass(call.status)}>{humanise(call.status)}</span>
+        <span>{formatDate(call.started_at)}</span>
+      </div>
+    </button>
+  )
+}
+
+function CallEvidencePage({ callId, onBack }: { callId: string; onBack: () => void }) {
+  const [detail, setDetail] = useState<CallDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    voltaApi
+      .getCall(callId)
+      .then((value) => {
+        setDetail(value)
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [callId])
+
+  useEffect(load, [load])
+
+  if (error) return <ErrorState message={error} onRetry={load} />
+  if (!detail) return <Loading what="the call" />
+
+  const { call, report, carrier } = detail
+
+  return (
+    <div className="page">
+      <button className="back-button" onClick={onBack}>
+        ← Back to the operation
+      </button>
+
+      <div className="evidence-detail surface">
+        <p className="eyebrow reference">
+          {humanise(String(call.phase))} · {call.direction}
+        </p>
+        <h2>{carrier?.name ?? call.to_number ?? call.from_number ?? 'Unknown counterparty'}</h2>
+        <p className="commitment-copy">
+          {formatDate(call.started_at)} · identity level {call.identity_level} ·{' '}
+          {call.identity_verified ? 'verified' : 'unverified'}
+        </p>
+
+        {call.recording_url && (
+          <div className="evidence-pointer">
+            <p>Recording</p>
+            <p>
+              <a href={call.recording_url} target="_blank" rel="noreferrer">
+                {call.recording_url}
+              </a>
+            </p>
+          </div>
+        )}
+
+        {report && (
+          <section>
+            <p className="eyebrow">What a model understood</p>
+            <p>{report.summary}</p>
+            {report.objections.length > 0 && (
+              <ul className="brief-list">
+                {report.objections.map((objection) => (
+                  <li key={objection}>{objection}</li>
+                ))}
+              </ul>
+            )}
+            <span className={statusClass(report.severity)}>{report.severity}</span>
+          </section>
+        )}
+
+        <section>
+          <p className="eyebrow">Transcript</p>
+          {call.transcript.length === 0 ? (
+            <p className="empty-copy">No transcript was stored for this call.</p>
+          ) : (
+            <div className="transcript">
+              {call.transcript.map((turn, index) => (
+                <div className="transcript-line" key={index}>
+                  <time>{formatOffset(turn.offset_ms)}</time>
+                  <div>
+                    <strong>{turn.speaker}</strong>
+                    <p>{turn.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------------------------------------------------------- carriers */
+
+function CarriersPage() {
+  const [carriers, setCarriers] = useState<Carrier[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    voltaApi
+      .listCarriers()
+      .then((value) => {
+        setCarriers(value)
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [])
+
+  useEffect(load, [load])
+
+  if (error) return <ErrorState message={error} onRetry={load} />
+  if (!carriers) return <Loading what="carriers" />
+
+  return (
+    <div className="page">
+      <div className="page-heading">
+        <p className="eyebrow">Carriers</p>
+        <h1>
+          Who Volta is <em>allowed</em> to call
+        </h1>
+        <p>
+          Being on file is a decision made here, never on the phone. A caller who is not on file
+          can say all the right things and still gets nothing.
+        </p>
+      </div>
+
+      <div className="operation-list">
+        {carriers.map((carrier) => (
+          <div className="operation-row" key={carrier.id}>
+            <div className="operation-route">
+              <strong>{carrier.name}</strong>
+              <span>{carrier.phone}</span>
+            </div>
+            <div className="operation-stage">
+              <span className={carrier.is_on_file ? 'status-badge status-ready' : 'status-badge status-deny'}>
+                {carrier.is_on_file ? 'on file' : 'not on file'}
+              </span>
+              <span>{carrier.persona ?? ''}</span>
+            </div>
+            <div className="operation-clock">
+              <small>{carrier.is_active ? 'active' : 'inactive'}</small>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
