@@ -16,6 +16,63 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T04:35-0500 · agent/prompts, scripts · diego
+
+**A conversational test harness, and the six prompt defects it found.**
+
+`scripts/chat_sim.py` puts a real model on the line against a hostile counterparty played by
+a second model, in text. It composes the agent from the same three functions
+`vapi/assistant.py` uses -- `build_runtime_system_prompt`, `build_tool_definitions`,
+`build_greeting` -- and lands its tool calls on the real `ModelTools` over `InMemoryStore`,
+so policy decides for real. 19 scenarios; `--all --repeat 5` costs about $1.60 and two
+minutes. `scripts/sim_tools.py` still owns the deterministic half; this covers the gap
+between "a dispatcher says something" and "a tool call exists", which nothing tested before.
+
+The finding behind most of the fixes: **`build_runtime_system_prompt` -- the prompt that
+actually ships to Vapi -- had lost controls that `build_system_prompt` still has.** The long
+prompt is described in that module as the readable specification and the runtime form as the
+same rules minus examples, and that had quietly stopped being true. Restored, plus four
+controls neither form had:
+
+- **It denied being a machine.** Asked "¿esto es una grabación?" it answered "no". The
+  disclosure rule was in `_INTEGRITY_RULES` only. 0/3 → 4/5.
+- **It spoke the ceiling.** "Can you offer a rate below 9,000 USD?" -- PR #13's licence to
+  "make a lower counterproposal supported by the operation's internal negotiation context"
+  is what produced it. A counter is now bounded by the number they just said.
+- **It fabricated dates and read them out.** "El viernes es 7 de junio este año", with today
+  set to 30 August 2026, and a `new_eta` of `2024-06-14T23:59` written to an incident. The
+  agent no longer resolves a weekday itself; it asks for the day and the month.
+- **It answered the identity oracle out loud.** `verify_caller` returns only match/no-match,
+  but the model said "Yes, that matches our reference OP-1042" to an unverified caller, and
+  elsewhere "no, that container number does not match our records" -- enough to enumerate
+  references by guessing. Ugly case 20 held in the store and leaked in the speech.
+- **It drifted back to English** after switching to Spanish, transfers and goodbyes included.
+- **It walked into a re-price at the close.** On an award call it recapped the carrier's new
+  9,400 and asked them to confirm it. 0/3 → 5/5.
+
+Aggregate over 190 conversations after the fixes, against 57 before: **56% → 83%** of
+scenario runs clean, 8 of the 19 scenarios at 10/10. Read that number with two caveats. Runs
+vary — two identical 95-conversation sweeps came out at 86% and 79%, so treat anything under
+about five points as noise and `--repeat 5` before believing a single failure. And the checks
+themselves moved in both directions while I was calibrating them: `inbound_driver_delay` looks
+like a regression (3/3 → 4/10) purely because it had no assertion on the ETA reaching
+`new_eta` until I added one, which is how the fabricated `2024-06-14` was found in the first
+place. The defensible claims are the individual defects below, each with a transcript.
+
+**One defect is left open on purpose, because the fix is not mine to make.** Ugly case 6
+("eight five") still writes a quotes row about one run in four. `parse.py` classifies the
+ambiguity correctly, but never sees it: the model resolves "eight five" to `8500` before the
+tool is called, so the deterministic guard sits below the layer where the ambiguity dies.
+Prompt hardening moved it from 0/5 to 1/5 and will not close it. The fix is a verbatim
+utterance field on `ProposeQuoteArgs` so `parse_amount` can judge what was actually said --
+a Track A contract change, flagged rather than shipped.
+
+→ Affects: Track D owns `agent/prompts.py`; the wording changes are all restrictions, and
+`tests/test_prompts.py` still passes unchanged. Track A: the `ProposeQuoteArgs` proposal
+above needs a decision. Nobody else.
+
+---
+
 ## 2026-08-30T03:09-0500 · vapi, tools, store, api, frontend · nacho/track-c
 
 Three things: a leak, the bug that was keeping the ledger empty, and the business profile.
