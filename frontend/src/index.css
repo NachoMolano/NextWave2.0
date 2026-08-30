@@ -447,3 +447,83 @@ h3 { font-size: 20px; }
   background: color-mix(in srgb, var(--green) 32%, transparent);
   outline: 1px solid color-mix(in srgb, var(--green) 70%, transparent);
 }
+
+/* ---------------------------------------------------- the comparison decision */
+/* One row per carrier: what they said, what policy decided, and the action, together.
+   The quotes list and the ranked comparison used to be two renderings of the same thing
+   in two columns, with the button on the smaller one. */
+
+.decision-surface { border-left: 3px solid var(--blue); }
+.decision-context { margin-top: 14px; color: var(--ink-muted); font-size: 13px; line-height: 1.5; }
+.decision-list { display: grid; gap: 12px; margin-top: 20px; }
+
+.decision-row { padding: 18px 19px; border: 1px solid var(--line); background: var(--panel); }
+/* The recommendation is a property of a row, not a card somewhere else. */
+.decision-row-best {
+  border: 2px solid color-mix(in srgb, var(--blue) 52%, transparent);
+  background: linear-gradient(125deg, color-mix(in srgb, var(--ice) 85%, var(--panel)), var(--panel));
+}
+/* Refused options stay visible -- the reason code is the audit -- but must not read as a
+   choice, because they are not one until the authority they were judged against changes. */
+.decision-row-refused { opacity: 0.62; background: color-mix(in srgb, var(--sand) 40%, var(--panel)); }
+
+.decision-row-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.decision-row-head h3 { font-size: 18px; font-weight: 550; }
+.decision-price { text-align: right; display: grid; gap: 2px; }
+.decision-price strong { font-size: 21px; font-weight: 550; letter-spacing: -0.01em; }
+.decision-price small { color: var(--ink-muted); font-size: 12px; }
+
+.decision-delta { display: inline-block; margin-top: 5px; color: var(--ink-muted); font-size: 12px; }
+.decision-refusal {
+  display: inline-block; margin-top: 5px; font-size: 12px;
+  color: color-mix(in srgb, var(--ink) 68%, var(--rust, #a4442a));
+}
+
+.decision-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0 4px; }
+.decision-metrics div { display: grid; gap: 4px; }
+.decision-metrics span { color: var(--ink-muted); font-size: 11px; }
+.decision-metrics strong { font-size: 15px; font-weight: 500; }
+
+.decision-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+/* Choosing against the deterministic ranking is a judgement, and a judgement with no reason
+   attached is not auditable -- so the reason is required before the button enables. */
+.decision-override { margin-top: 14px; display: grid; gap: 8px; }
+.decision-override label { font-size: 12px; color: var(--ink-muted); }
+.decision-override input {
+  padding: 10px 12px; border: 1px solid var(--line); background: var(--panel);
+  font: inherit; font-size: 14px; color: var(--ink);
+}
+
+.decision-footer {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.decision-footer small { flex: 1 1 260px; color: var(--ink-muted); font-size: 12px; line-height: 1.45; }
+
+@media (max-width: 900px) {
+  .decision-metrics { grid-template-columns: repeat(2, 1fr); }
+  .decision-row-head { flex-direction: column; }
+  .decision-price { text-align: left; }
+}
+
+/* -------------------------------------------------------------------- intake */
+/* Stage 1 is a gate. Until it is passed the mandate is refused and nobody is dialled, so
+   it is the page -- not a card in the rail beside the thing it blocks. */
+
+.intake-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0 6px; }
+.intake-facts div { display: grid; gap: 4px; }
+.intake-facts span { color: var(--ink-muted); font-size: 11px; }
+.intake-facts strong { font-size: 15px; font-weight: 500; }
+
+.intake-clock { display: grid; gap: 6px; margin-top: 16px; }
+.intake-clock label { font-size: 12px; color: var(--ink-muted); }
+.intake-clock input {
+  padding: 10px 12px; border: 1px solid var(--line); background: var(--panel);
+  font: inherit; font-size: 14px; color: var(--ink); max-width: 340px;
+}
+.intake-clock small { color: var(--ink-muted); font-size: 12px; line-height: 1.45; }
+
+/* Once released it stops being a decision and becomes a receipt. */
+.intake-confirmed { border-left: 3px solid color-mix(in srgb, var(--green, #1f6f43) 60%, transparent); }
+
+@media (max-width: 900px) { .intake-facts { grid-template-columns: repeat(2, 1fr); } }

@@ -291,6 +291,69 @@ async def test_request_award_approval_hands_over_the_whole_comparison() -> None:
     assert order_row is not None and order_row.status is OrderStatus.AWAITING_APPROVAL
 
 
+async def test_the_comparison_closes_the_escalations_it_answers() -> None:
+    """Five notices about refused quotes are not five decisions. They are one, buried.
+
+    Each mid-call escalation was right when it was raised: a stranger offered 10,500 against a
+    9,000 ceiling and a person should know. Once the market closes, the comparison lists that
+    same quote, carrier and reason code in the one place something can be done about it, and
+    the notice is a duplicate wearing an Approve button.
+    """
+    store, market = seeded()
+    over_cap = await store.add_quote(quote("carrier-2", 1_050_000))
+    await store.add_quote(quote("carrier-1", 810_000))
+    quote_escalation = await store.raise_approval(
+        Approval(
+            order_id="order-1",
+            kind=ApprovalKind.ESCALATION,
+            reason=ApprovalReason.OUTSIDE_MANDATE,
+            context={"quote_id": over_cap, "reason_code": ReasonCode.OUTSIDE_MANDATE.value},
+            raised_at=NOW,
+        )
+    )
+    # Not about a quote, so the comparison says nothing about it and it stays open.
+    incident = await store.raise_approval(
+        Approval(
+            order_id="order-1",
+            kind=ApprovalKind.INCIDENT,
+            reason=ApprovalReason.CARRIER_REPORTED_INCIDENT,
+            context={"detail": "the driver hit a truck"},
+            raised_at=NOW,
+        )
+    )
+
+    approval = await market.request_award_approval(order(), await market.rank(order()))
+
+    closed = await store.approval(quote_escalation)
+    assert closed is not None and closed.status is ApprovalStatus.HANDLED
+    assert closed.decided_by == Market.SUPERSEDED_BY_COMPARISON
+    assert str(approval.id) in str(closed.note), "the row names what answered it"
+    still_open = {a.id for a in await store.open_approvals("order-1")}
+    assert incident in still_open, "an incident is not a quote refusal"
+    assert approval.id in still_open
+
+
+async def test_a_second_ranking_supersedes_the_first_award_request() -> None:
+    """Two open award requests is two Approve buttons for one truck.
+
+    Raising the ceiling ranks the market again. The database refuses a second *award*; this
+    keeps a person from being offered the choice in the first place.
+    """
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 950_000))
+    first = await market.request_award_approval(order(), await market.rank(order()))
+
+    raised = order(cap=Money(cents=1_000_000, currency="USD"), mandate_version=2)
+    second = await market.request_award_approval(raised, await market.rank(raised))
+
+    stale = await store.approval(str(first.id))
+    assert stale is not None and stale.status is ApprovalStatus.HANDLED
+    open_awards = [
+        a for a in await store.open_approvals("order-1") if a.kind is ApprovalKind.AWARD_APPROVAL
+    ]
+    assert [a.id for a in open_awards] == [second.id]
+
+
 async def test_renegotiation_context_uses_the_first_call_report_as_guidance() -> None:
     store, market = seeded()
     quote_id = await store.add_quote(quote("carrier-1", 850_000))
@@ -455,3 +518,49 @@ async def test_quotes_that_all_miss_the_ceiling_still_reach_a_person_as_an_award
     assert approval.reason is ApprovalReason.NO_ELIGIBLE_CANDIDATE
     saved = await store.order("order-1")
     assert saved is not None and saved.status is OrderStatus.AWAITING_APPROVAL
+
+
+async def test_an_operator_may_award_an_eligible_carrier_that_is_not_the_winner() -> None:
+    """The ranking is deterministic on cost. Cost is not everything an operator knows.
+
+    A carrier who has never missed a window is worth a hundred dollars, and that judgement
+    is theirs to make -- so the comparison offers every eligible option, not just the
+    cheapest, and records which one a person chose.
+    """
+    store, market = seeded()
+    cheap = await store.add_quote(quote("carrier-1", 800_000))
+    dearer = await store.add_quote(quote("carrier-2", 850_000))
+    comparison = await market.rank(order())
+    assert comparison.winner_quote_id == cheap, "the cheapest is still what policy recommends"
+
+    approval = (await market.request_award_approval(order(), comparison)).model_copy(
+        update={"status": ApprovalStatus.APPROVED}
+    )
+    awarded = await market.award(order(), approval, chosen_quote_id=dearer)
+
+    assert awarded == dearer
+    saved = await store.quote(dearer)
+    assert saved is not None and saved.status is QuoteStatus.ACCEPTED
+
+
+async def test_an_operator_may_not_award_a_quote_policy_refused() -> None:
+    """Choosing among the options policy allows is judgement. Choosing around them is not.
+
+    Awarding an over-cap quote still means raising the ceiling, which bumps the mandate
+    version and re-evaluates everything -- so a refusal a judge watched happen is never
+    undone by a click, only by a new authority with a name on it.
+    """
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 800_000))
+    over_cap = await store.add_quote(quote("carrier-2", 1_500_000))
+    comparison = await market.rank(order())
+
+    approval = (await market.request_award_approval(order(), comparison)).model_copy(
+        update={"status": ApprovalStatus.APPROVED}
+    )
+
+    with pytest.raises(ValueError, match="not eligible under the current mandate"):
+        await market.award(order(), approval, chosen_quote_id=over_cap)
+
+    saved = await store.quote(over_cap)
+    assert saved is not None and saved.status is not QuoteStatus.ACCEPTED

@@ -119,6 +119,9 @@ export interface OrderSummary {
 
 export interface Order {
   id: string
+  released_at?: string | null
+  released_by?: string | null
+  release_note?: string | null
   reference: string
   status: OrderStatus
   origin: string | null
@@ -284,6 +287,8 @@ export interface OrderAggregate {
   calls: CallRecord[]
   commitment: Commitment | null
   approvals: Approval[]
+  /** Every carrier named on this screen. A quote carries a carrier_id and nothing readable. */
+  carriers: Carrier[]
 }
 
 /** Keeps the losers and their reason codes. A comparison naming only the winner is not auditable. */
@@ -325,9 +330,27 @@ export interface SetMandateRequest {
   expected_version: number
 }
 
+export interface ConfirmIntakeRequest {
+  /** True confirms the container may move. False records a hold and clears the release. */
+  released: boolean
+  note?: string | null
+  discharged_at?: string | null
+  free_days?: number | null
+  last_free_day?: string | null
+  delivery_deadline?: string | null
+  weight?: string | null
+  container_number?: string | null
+  equipment?: string | null
+}
+
 export interface ApprovalDecisionRequest {
   status: 'approved' | 'rejected' | 'handled' | 'expired'
   note: string | null
+  /**
+   * Award this carrier instead of the ranked winner. Still evaluated under current policy:
+   * an operator picks among the options policy allows, never around them.
+   */
+  quote_id?: string | null
 }
 
 

@@ -34,8 +34,10 @@ from app.domain import (
     DecisionRow,
     DialPlan,
     EventRow,
+    Money,
     Order,
     OrderStatus,
+    QuoteRow,
 )
 from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore, RecordingNotifier
@@ -117,6 +119,7 @@ class FakeMarket:
     ) -> None:
         self.planned: list[tuple[str, int]] = []
         self.awarded: list[str] = []
+        self.award_choices: list[str] = []
         self.failed_rounds: list[list[str]] = []
         self._planned_ids: set[str] = set()
         self.award_conflict = award_conflict
@@ -160,11 +163,14 @@ class FakeMarket:
             built_at=NOW,
         )
 
-    async def award(self, order: Order, approval: Approval) -> str:
+    async def award(self, order: Order, approval: Approval, chosen_quote_id: str = "") -> str:
         if self.award_conflict:
             raise AwardConflict(f"order {order.id} already awarded")
         self.awarded.append(str(order.id))
-        return "quote-1"
+        # The real one re-evaluates whichever quote it is handed. Recorded rather than
+        # ignored, because the bug this fake missed was the route never passing it.
+        self.award_choices.append(chosen_quote_id)
+        return chosen_quote_id or "quote-1"
 
     async def plan_award(self, order: Order, quote_id: str) -> list[DialPlan]:
         carrier = Carrier(id="carrier-1", name="Winner", phone="+525500000001")
@@ -329,7 +335,40 @@ def test_the_aggregate_is_one_call() -> None:
         "calls",
         "commitment",
         "approvals",
+        "carriers",
     }
+
+
+def test_the_aggregate_names_the_carrier_behind_every_quote() -> None:
+    """A quote row carries a carrier_id and nothing a person can read.
+
+    Without the names, the market panel is a column of prices with no way to tell whose is
+    whose -- four numbers, not a comparison -- and no way to see that two of them came from
+    the same carrier an hour apart.
+    """
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    store.add_carrier(Carrier(id="carrier-1", name="Fletes del Pacifico", phone="+523141000001"))
+    call_id = _rfq_call(store, order_id, "carrier-1")
+    asyncio.run(
+        store.add_quote(
+            QuoteRow(
+                order_id=order_id,
+                carrier_id="carrier-1",
+                call_id=call_id,
+                anchor_ms=11_200,
+                amount=Money(cents=810_000, currency="USD"),
+                pickup_at=NOW + timedelta(days=3),
+                equipment="40-foot container chassis",
+                valid_until=NOW + timedelta(hours=6),
+            )
+        )
+    )
+
+    body = client.get(f"/api/orders/{order_id}").json()
+
+    assert [c["name"] for c in body["carriers"]] == ["Fletes del Pacifico"]
+    assert body["quotes"][0]["carrier_id"] == body["carriers"][0]["id"]
 
 
 def test_an_unknown_order_is_404_not_500() -> None:
@@ -590,6 +629,27 @@ def _rfq_call(store: PortalMemoryStore, order_id: str, carrier_id: str) -> str:
             )
         )
     )
+
+
+def test_the_carrier_a_person_picked_is_the_carrier_awarded() -> None:
+    """"Award this one instead" has to award that one.
+
+    The route dropped ``quote_id`` on the floor, so every approval awarded the ranked winner
+    -- including the one where an operator had just typed a reason for choosing somebody
+    else. It is not a way around the mandate: ``Market.award`` re-evaluates whatever quote it
+    is handed under current policy, and refuses it there if policy does.
+    """
+    client, store, market, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    approval_id = _award_approval(store, order_id)
+
+    response = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"status": "approved", "quote_id": "quote-7", "note": "never misses a window"},
+    )
+
+    assert response.status_code == 200
+    assert market.award_choices == ["quote-7"]
 
 
 def test_approving_an_award_releases_the_award_call() -> None:
@@ -976,16 +1036,44 @@ def test_a_store_without_the_migration_says_so() -> None:
 # --------------------------------------------------------------- where are we, and whose move
 
 
-def test_a_new_order_is_waiting_on_a_person() -> None:
-    """The question a portal has to answer: is this waiting on me, or is it working?"""
+def test_a_new_order_asks_for_the_release_before_the_mandate() -> None:
+    """The question a portal has to answer: is this waiting on me, or is it working?
+
+    And the answer has to be an action the server will accept. It said "Grant a mandate" on
+    a container nobody had released, the mandate endpoint refused it, and the portal offered
+    no way to do the thing it was actually asking for.
+    """
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     action = client.get(f"/api/orders/{order_id}").json()["next_action"]
 
     assert action["actor"] == "operator"
+    assert action["label"] == "Confirm the release"
+    assert action["stage"] == "Intake"
+
+
+def test_a_released_order_is_then_asked_for_the_mandate() -> None:
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
     assert action["label"] == "Grant a mandate"
     assert action["stage"] == "Mandate"
+
+
+def test_a_released_order_with_no_clock_is_asked_for_one() -> None:
+    """A ceiling with no deadline is authority to negotiate with no reason to hurry."""
+    client, _, _, _, _ = build()
+    order = {**_new_order(), "free_days": None, "last_free_day": None}
+    order_id = client.post("/api/orders", json=order).json()["id"]
+    client.post(f"/api/orders/{order_id}/intake", json={"released": True})
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["label"] == "Set the clock"
 
 
 def test_an_open_market_is_working_not_waiting() -> None:

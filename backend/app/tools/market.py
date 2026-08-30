@@ -37,6 +37,7 @@ from app.domain import (
     Order,
     OrderStatus,
     PolicyDecision,
+    PolicyOutcome,
     QuoteProposal,
     QuoteRow,
     QuoteStatus,
@@ -520,6 +521,7 @@ class Market:
             raised_at=self._now(),
         )
         approval_id = await self._store.raise_approval(approval)
+        await self._superseded_by_comparison(order, approval_id)
         await self._store.set_order_status(order.id, OrderStatus.AWAITING_APPROVAL)
         await self._store.append_event(
             EventRow(
@@ -534,12 +536,71 @@ class Market:
         )
         return approval.model_copy(update={"id": approval_id})
 
-    async def award(self, order: Order, approval: Approval) -> str:
-        """Revalidate and accept the approved winner against current trusted state."""
+    #: Recorded as the decider on an inbox item the ranked comparison replaced. Not a person:
+    #: nobody decided these, they stopped being questions. Named rather than blank because the
+    #: ``decided_has_decider`` check refuses an anonymous close, and rightly.
+    SUPERSEDED_BY_COMPARISON = "system:comparison"
+
+    async def _superseded_by_comparison(self, order: Order, approval_id: str) -> None:
+        """Close the inbox items this comparison has just answered.
+
+        Two things pile up while a market is open and mean nothing once it closes.
+
+        The first is one escalation per refused quote. Each was right when it was raised --
+        a stranger on the phone offered 10,500 against a 9,000 ceiling and a person should
+        know -- but the comparison now lists that same quote, that same carrier and that same
+        reason code, in the one place where something can be done about it. Six cards saying
+        *outside mandate* with an Approve button that authorizes nothing is not six decisions;
+        it is one decision buried in five notices.
+
+        The second is an earlier award approval. Raising the ceiling reopens the market and
+        ranks again, and two open award requests for one order is two Approve buttons for a
+        lane that may have exactly one truck. The database refuses a second *award*; this
+        keeps a person from being offered the choice at all.
+
+        Nothing is deleted. The row is closed as handled, with a decider and a note naming
+        the comparison that answered it, which is the audit trail the escalation existed for.
+        """
+        note = f"Superseded by the ranked comparison ({approval_id})."
+        for open_item in await self._store.open_approvals(order.id):
+            if not open_item.id or open_item.id == approval_id:
+                continue
+            is_stale_award = open_item.kind is ApprovalKind.AWARD_APPROVAL
+            # Keyed on carrying a quote_id rather than on the reason code: what makes an
+            # escalation answerable here is that it is about a quote this ranking judged.
+            # An incident, an identity failure or a direct request is about something else
+            # and stays open, because nothing in the comparison speaks to it.
+            is_quote_escalation = (
+                open_item.kind is ApprovalKind.ESCALATION
+                and bool(open_item.context.get("quote_id"))
+            )
+            if not (is_stale_award or is_quote_escalation):
+                continue
+            await self._store.resolve_approval(
+                open_item.id,
+                status=ApprovalStatus.HANDLED.value,
+                decided_by=self.SUPERSEDED_BY_COMPARISON,
+                note=note,
+            )
+
+    async def award(self, order: Order, approval: Approval, chosen_quote_id: str = "") -> str:
+        """Revalidate and accept the approved carrier against current trusted state.
+
+        ``chosen_quote_id`` lets a person award someone other than the ranked winner. The
+        ranking is deterministic on cost, and cost is not the only thing an operator knows:
+        a carrier who has never missed a window is worth a hundred dollars, and that
+        judgement is theirs to make and ours to record.
+
+        What it is *not* is a way around the mandate. The chosen quote is re-evaluated under
+        current policy like any other, and only an entry policy currently ALLOWS may be
+        awarded. Awarding an over-cap quote still requires raising the ceiling, which bumps
+        the mandate version and re-evaluates every option -- so the refusal a judge sees is
+        never undone by a click, only by a new authority with a name on it.
+        """
         if approval.status is not ApprovalStatus.APPROVED:
             raise ValueError("an award requires an approved approval; nothing else authorizes one")
 
-        quote_id = str(approval.context.get("winner_quote_id") or "")
+        quote_id = chosen_quote_id or str(approval.context.get("winner_quote_id") or "")
         if not quote_id:
             raise ValueError("the approval carries no winning quote")
 
@@ -560,8 +621,18 @@ class Market:
             return quote_id
 
         current = await self.rank(order)
-        if current.winner_quote_id != quote_id:
-            raise ValueError("the approved quote is no longer the current eligible winner")
+        eligible = {
+            entry.quote_id
+            for entry in current.entries
+            if entry.outcome == PolicyOutcome.ALLOW.value
+        }
+        if quote_id not in eligible:
+            # Covers both cases with one check: the ranked winner that has since gone stale,
+            # and an operator choosing a carrier policy will not allow.
+            raise ValueError(
+                "that quote is not eligible under the current mandate; raise the ceiling or "
+                "reopen the market"
+            )
 
         try:
             await self._store.accept_quote(order.id, quote_id)

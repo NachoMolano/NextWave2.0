@@ -233,6 +233,21 @@ def create_api_router(
             calls = await store.calls_for(order_id)
             commitment = await store.live_commitment(order_id)
             approvals = await store.open_approvals(order_id)
+            # Who each of those is about. A quote carries a carrier_id and nothing a person
+            # can read, so without this the market panel is a column of prices with no names
+            # -- four numbers, not a comparison. Fetched once per distinct carrier: three
+            # quotes from one carrier is one lookup.
+            carriers: list[Carrier] = []
+            seen: set[str] = set()
+            for carrier_id in [q.carrier_id for q in quotes] + [
+                c.carrier_id for c in calls if c.carrier_id
+            ]:
+                if carrier_id in seen:
+                    continue
+                seen.add(carrier_id)
+                found = await store.carrier(carrier_id)
+                if found is not None:
+                    carriers.append(found)
         today = now().date()
         live_quotes = [q for q in quotes if str(q.status) in ("proposed", "selected", "accepted")]
         return OrderAggregate(
@@ -249,6 +264,7 @@ def create_api_router(
             calls=calls,
             commitment=commitment,
             approvals=approvals,
+            carriers=carriers,
         )
 
     @router.post("/orders/{order_id}/intake", response_model=OrderAggregate)
@@ -459,7 +475,7 @@ def create_api_router(
         if (
             body.status == "approved"
             and str(approval.kind) == "award_approval"
-            and not approval.context.get("winner_quote_id")
+            and not (body.quote_id or approval.context.get("winner_quote_id"))
         ):
             raise HTTPException(
                 status_code=409,
@@ -473,6 +489,12 @@ def create_api_router(
             if body.status == "approved" and approval.order_id:
                 order = await store.order(approval.order_id)
                 if order is not None and str(approval.kind) == "award_approval":
+                    # The operator's pick has to travel with the approval. Without it every
+                    # approval awarded the ranked winner, so "award this one instead" -- with
+                    # a reason typed into the box next to it -- silently booked a different
+                    # carrier. ``Market.award`` re-evaluates whichever quote arrives here
+                    # under current policy, so passing it widens the choice, never the
+                    # authority: a quote policy refuses is still refused.
                     quote_id = await market.award(
                         order,
                         approval.model_copy(
@@ -482,6 +504,7 @@ def create_api_router(
                                 "note": body.note,
                             }
                         ),
+                        body.quote_id or "",
                     )
                     if notify_award_decision is not None:
                         await notify_award_decision(order, quote_id)

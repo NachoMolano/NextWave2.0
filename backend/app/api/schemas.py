@@ -121,6 +121,12 @@ class ApprovalDecisionRequest(BaseModel):
 
     status: str = Field(pattern="^(approved|rejected|handled|expired)$")
     note: str | None = None
+    quote_id: str | None = Field(
+        default=None,
+        description="Award this carrier instead of the ranked winner. The choice is still "
+        "evaluated under current policy: an operator may pick among the options policy "
+        "allows, never around them.",
+    )
 
 
 # --------------------------------------------------------------------------- what it reads back
@@ -236,6 +242,10 @@ class OrderAggregate(BaseModel):
     calls: list[CallRecord]
     commitment: Commitment | None
     approvals: list[Approval]
+    #: Every carrier named anywhere on this screen, so a quote, a call and an escalation can
+    #: each say who they are about. Quotes carry a ``carrier_id`` and nothing else, and a
+    #: column of prices with no names is not a comparison -- it is four numbers.
+    carriers: list[Carrier]
 
 
 class CallDetail(BaseModel):
