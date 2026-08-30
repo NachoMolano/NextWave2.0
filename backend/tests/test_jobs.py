@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from app import jobs
 from app.config import Settings
 from app.domain import (
+    Approval,
     ApprovalKind,
     CallDirection,
     CallPhase,
@@ -21,6 +22,7 @@ from app.domain import (
     CallRecord,
     CallStatus,
     Carrier,
+    Comparison,
     DialPlan,
     Money,
     Order,
@@ -215,6 +217,48 @@ async def test_a_market_still_inside_its_timeout_is_left_open() -> None:
     assert await jobs.timeout_open_markets(store, SETTINGS, now=now) == []
     order = await store.order("order-1")
     assert order is not None and order.status is OrderStatus.QUOTING
+
+
+async def test_a_quote_less_active_carrier_keeps_the_first_round_open() -> None:
+    store = quoting_world(call_status=CallStatus.ENDED, started_at=NOW - timedelta(minutes=5))
+    store.calls["call-2"] = CallRecord(
+        id="call-2",
+        vapi_call_id="vapi-2",
+        direction=CallDirection.OUTBOUND,
+        phase=CallPhase.RFQ.value,
+        status=CallStatus.ACTIVE,
+        order_id="order-1",
+        carrier_id="carrier-2",
+        started_at=NOW - timedelta(minutes=5),
+    )
+
+    assert await jobs.timeout_open_markets(store, SETTINGS, now=now) == []
+    assert not store.approvals
+
+
+async def test_finished_renegotiation_is_compared_alerted_and_sent_for_approval() -> None:
+    store = quoting_world(call_status=CallStatus.ENDED, started_at=NOW - timedelta(minutes=5))
+    store.calls["call-2"] = CallRecord(
+        id="call-2",
+        vapi_call_id="vapi-2",
+        direction=CallDirection.OUTBOUND,
+        phase=CallPhase.RENEGOTIATION.value,
+        status=CallStatus.ENDED,
+        order_id="order-1",
+        carrier_id="carrier-1",
+        started_at=NOW - timedelta(minutes=2),
+    )
+    alerted: list[str] = []
+
+    async def alert(comparison: Comparison, approval: Approval) -> None:
+        alerted.append(f"{comparison.winner_quote_id}:{approval.id}")
+
+    ranked = await jobs.timeout_open_markets(store, SETTINGS, now=now, alert=alert)
+
+    assert ranked == ["order-1"]
+    assert alerted == ["quote-1:approval-1"]
+    current = await store.order("order-1")
+    assert current is not None and current.status is OrderStatus.AWAITING_APPROVAL
 
 
 async def test_a_market_is_ranked_only_once() -> None:

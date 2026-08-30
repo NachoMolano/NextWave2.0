@@ -16,8 +16,10 @@ approved decision record, the executable contract and newer decision win.
   comparison immediately before accepting the quote.
 - A verbal pre-agreement can reference only the database-accepted winner and the matching carrier
   call during the AWARD phase.
-- The unfinished renegotiation endpoint is not advertised. Historical supersession primitives
-  remain available to a future, separately specified workflow.
+- After the initial RFQ market closes, Volta performs one bounded renegotiation round with
+  carriers that supplied comparable quotes. The new calls receive the standing quote plus the
+  transcript-derived report as conversational context; only fresh typed proposals evaluated by
+  deterministic policy can supersede a quote. The second comparison produces the human approval.
 - Operational exposure stays advisory and unknown unless sourced. No universal tariff,
   demurrage, detention, depot-divergence, or travel-time formula is present.
 

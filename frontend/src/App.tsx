@@ -9,6 +9,7 @@ import type {
   CallRecord,
   Carrier,
   Commitment,
+  Comparison,
   MandateView,
   Money,
   OrderAggregate,
@@ -816,11 +817,28 @@ function ApprovalCard({
   busy: boolean
   onDecide: (status: 'approved' | 'rejected') => void
 }) {
+  const comparison = approval.kind === 'award_approval' ? approvalComparison(approval) : null
   return (
     <div className="snapshot">
       <strong>{humanise(approval.kind)}</strong>
       <span>{humanise(approval.reason)}</span>
       <small>Raised {formatDate(approval.raised_at)}</small>
+      {comparison && (
+        <div className="approval-comparison">
+          <strong>Policy-ranked carrier comparison</strong>
+          {comparison.entries.map((entry) => (
+            <div
+              className={entry.is_winner ? 'approval-option approval-option-winner' : 'approval-option'}
+              key={entry.quote_id}
+            >
+              <span>{entry.is_winner ? 'Recommended · ' : ''}{entry.carrier_name}</span>
+              <b>{formatMoney(entry.amount)}</b>
+              <small>{humanise(entry.outcome)} · {humanise(entry.reason_code)} · pickup {formatDate(entry.pickup_at)}</small>
+            </div>
+          ))}
+          <small>Mandate version {comparison.mandate_version} · recommendation is revalidated when approved</small>
+        </div>
+      )}
       <div className="dialog-actions">
         <button
           className="secondary-button"
@@ -856,6 +874,11 @@ function ApprovalsPage({ onOpen }: { onOpen: (orderId: string) => void }) {
   }, [])
 
   useEffect(load, [load])
+
+  useEffect(() => {
+    const poll = window.setInterval(load, 5000)
+    return () => window.clearInterval(poll)
+  }, [load])
 
   if (error) return <ErrorState message={error} onRetry={load} />
   if (!approvals) return <Loading what="the inbox" />
@@ -904,6 +927,12 @@ function ApprovalsPage({ onOpen }: { onOpen: (orderId: string) => void }) {
       )}
     </div>
   )
+}
+
+function approvalComparison(approval: Approval): Comparison | null {
+  const value = approval.context
+  if (!Array.isArray(value.entries) || typeof value.order_id !== 'string') return null
+  return value as unknown as Comparison
 }
 
 /* -------------------------------------------------------------- commitment */

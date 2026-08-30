@@ -471,3 +471,13 @@ Phase 0. The repo, the seams, and the schema — everything four tracks build ag
 
 → Affects: **everyone**. Pull `main` before starting your track. `app/domain/ports.py` is
 the contract — do not change a signature there without an entry here first.
+
+# 2026-08-30 — Final market loop integration
+
+- RFQ closure now observes every persisted call, including failed and quote-less attempts.
+- One transcript-informed renegotiation round runs before the final deterministic comparison.
+- The final comparison creates a dashboard-ready approval and a persisted manager email alert.
+- The dashboard displays the recommended carrier, all alternatives, and policy reason codes.
+
+→ Affects: Track B lifecycle phase preservation, Track C call listing/dashboard, Track D award
+email, and Track E market/job orchestration.
