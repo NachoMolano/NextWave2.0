@@ -297,3 +297,42 @@ def test_an_unknown_timezone_degrades_instead_of_refusing() -> None:
 def test_the_transfer_message_asks_them_to_stay_on_the_line() -> None:
     """The failure mode of an escalation is the counterparty hanging up during the silence."""
     assert transfer_message(PROFILE).strip()
+
+
+# --------------------------------------------------------------- what Vapi's validator rejects
+
+
+def test_no_argument_property_is_left_without_a_type() -> None:
+    """``str | None`` compiles to a bare ``anyOf`` -- Vapi 400s the whole assistant on it.
+
+    The refusal happens at dial time, so this is the difference between a call that rings and
+    a campaign that logs a dial failure for every carrier at once.
+    """
+    for tool in build_tool_definitions(_settings()):
+        parameters = tool["function"].get("parameters")
+        if not parameters:
+            continue
+        for name, schema in parameters["properties"].items():
+            assert "anyOf" not in schema, f"{tool['function']['name']}.{name} still a union"
+            declared = schema.get("type")
+            assert declared, f"{tool['function']['name']}.{name} has no type"
+            if isinstance(declared, list):
+                assert declared[0] != "null", "the concrete type comes first"
+
+
+def test_the_parameters_object_carries_no_description() -> None:
+    """Vapi accepts a description on every property but not on the parameters object itself."""
+    for tool in build_tool_definitions(_settings()):
+        parameters = tool["function"].get("parameters")
+        if parameters:
+            assert "description" not in parameters
+
+
+def test_an_optional_argument_stays_optional() -> None:
+    """Collapsing the union must not quietly make a field the model may omit required."""
+    (quote,) = [
+        t for t in build_tool_definitions(_settings()) if t["function"]["name"] == "propose_quote"
+    ]
+    schema = quote["function"]["parameters"]["properties"]["valid_until"]
+    assert schema["type"] == ["string", "null"]
+    assert "valid_until" not in quote["function"]["parameters"].get("required", [])

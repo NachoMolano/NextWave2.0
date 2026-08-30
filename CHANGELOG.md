@@ -16,6 +16,31 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T02:16-0500 · vapi/assistant · nacho
+
+CP4: the first real outbound call connected. Two things had to change to get there.
+
+`_parameters_schema` now collapses Pydantic's `anyOf` unions into a single `type` and drops
+the `description` on the parameters object. Vapi rejects both — `str | None` compiles to a
+bare `anyOf` with no type of its own, and a description is allowed on every property but not
+on the parameters object that holds them. Either one 400s the *whole* assistant at dial time,
+so every carrier in a campaign fails at once and the log says only "dial failed". Verified
+against the live API, not the docs: the error text names `description` even when the actual
+offender is the missing type.
+
+`tzdata` is now a declared dependency. Without it `zoneinfo` has no database on Windows,
+`spoken_today` fell back to UTC, and the agent read tomorrow's date to a carrier every evening
+after 18:00 Guadalajara. Linux CI has a system tzdb, so it only ever showed on a laptop.
+
+Also found, not fixed: `POST /api/orders/{id}/rfq` calls `market.plan_rfq` and discards the
+returned `list[DialPlan]`. Plans and call rows are written, the order flips to QUOTING, and
+nothing dials. `run_campaign` is wired only to the chase path in `jobs.py`, so the parallel
+RFQ fan-out — the centre of the brief — has no trigger.
+
+→ Affects: **Track C** — `start_rfq` needs the injected dialler to place the plans it makes.
+**Track E** — `sim_tools --url` and `replay_webhook --url` send no `x-vapi-secret`, so both
+get 401 against a correctly configured server and the live HTTP rung cannot be exercised.
+
 ## 2026-08-30T01:42-0500 · integration, ci · codex
 
 All four tracks are reconciled on the Track C branch. `main.py` now injects the real tool,
