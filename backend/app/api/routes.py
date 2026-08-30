@@ -49,6 +49,7 @@ from app.domain import (
     Approval,
     CallRecord,
     Carrier,
+    DialPlan,
     Money,
     Order,
     OrderStatus,
@@ -79,6 +80,9 @@ class PortalStore(Store, Protocol):
 
 #: A sweep the router can trigger without importing jobs. Returns the call ids placed.
 Sweep = Callable[[], Awaitable[list[str]]]
+#: Places the calls an RFQ planned. A callable rather than the campaign itself because
+#: ``api`` may not import ``vapi`` -- main.py has already chosen the placer and the profile.
+RfqDialler = Callable[[list[DialPlan]], Awaitable[dict[str, str]]]
 
 
 @contextmanager
@@ -107,6 +111,7 @@ def create_api_router(
     *,
     market: Market,
     sweep: Sweep,
+    dial: RfqDialler,
     now: Callable[[], datetime],
     settings: Settings,
 ) -> APIRouter:
@@ -228,7 +233,11 @@ def create_api_router(
                 detail=f"order {order.reference} has no mandate: nothing is authorized",
             )
         with _guard():
-            await market.plan_rfq(order, settings.rfq_carrier_count)
+            plans = await market.plan_rfq(order, settings.rfq_carrier_count)
+        # Outside the guard: a dial failure is not a store failure, and run_campaign already
+        # absorbs a single carrier's failure so the other two still ring.
+        if plans:
+            await dial(plans)
         return await get_order(order_id)
 
     @router.get("/orders/{order_id}/comparison")

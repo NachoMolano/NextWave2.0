@@ -162,6 +162,12 @@ class InMemoryStore:
         self.calls[call_id] = call.model_copy(update=update)
         return call_id
 
+    async def attach_vapi_call_id(self, call_id: str, vapi_call_id: str) -> None:
+        record = self.calls.get(call_id)
+        if record is None:
+            raise KeyError(call_id)
+        self.calls[call_id] = record.model_copy(update={"vapi_call_id": vapi_call_id})
+
     async def add_quote(self, quote: QuoteRow) -> str:
         quote_id = quote.id or _next_id("quote", self.quotes)
         self.quotes[quote_id] = quote.model_copy(update={"id": quote_id})
