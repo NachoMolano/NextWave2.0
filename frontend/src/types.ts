@@ -419,4 +419,6 @@ export type BusinessProfileUpdate = Partial<Omit<BusinessProfile, 'updated_at' |
 /** Who the portal thinks you are, and how specific that claim really is. */
 export interface Session {
   actor: string
+  /** How many carriers an RFQ dials. Server settings, so the authorize button can name it. */
+  rfq_carrier_count: number
 }
