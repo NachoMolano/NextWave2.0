@@ -213,6 +213,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise RuntimeError(
             "production configuration is incomplete: " + ", ".join(production_errors)
         )
+    missing_keys = settings.missing_keys()
+    if missing_keys:
+        # A demo deployment boots anyway -- a backend that refuses to start minutes before a
+        # demo is worse than one running with a hole in it -- but the hole is now the first
+        # thing in the log rather than something found weeks later in a traceback. Names
+        # only; a value here would put a secret in the deployment log.
+        log.error("config.incomplete", environment=settings.environment, missing=list(missing_keys))
     store = build_store(settings)
     placer = build_placer(settings)
     notifier = build_notifier(settings)
@@ -339,8 +346,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.volta = app_state
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "environment": settings.environment}
+    async def health() -> dict[str, object]:
+        # Names of unset keys, never values. /health answering a flat "ok" while every call
+        # brief and every written confirmation was failing on empty configuration is how the
+        # gap stayed invisible; one curl should now show it. Still 200 -- Render's health
+        # check points here, and an incomplete demo is running, not down.
+        body: dict[str, object] = {"status": "ok", "environment": settings.environment}
+        if missing_keys:
+            body["config"] = "incomplete"
+            body["missing"] = list(missing_keys)
+        return body
 
     app.include_router(
         create_tool_router(model_tools, store, server_secret=settings.vapi_server_secret),

@@ -118,6 +118,46 @@ def test_recording_is_opt_in_and_disables_preagreement_without_evidence() -> Non
     assert "confirm_preagreement" not in names
 
 
+@pytest.mark.parametrize("recording", [True, False], ids=["recording-on", "recording-off"])
+@pytest.mark.parametrize(
+    "phase",
+    [
+        CallPhase.RFQ,
+        CallPhase.AWARD,
+        CallPhase.RENEGOTIATION,
+        CallPhase.INBOUND,
+        CallPhase.STATUS_CHECK,
+    ],
+    ids=lambda phase: phase.value,
+)
+def test_the_prompt_never_orders_a_tool_the_assistant_was_not_given(
+    phase: CallPhase, recording: bool
+) -> None:
+    """A prompt naming a tool that is not in the list is not a smaller prompt. It is a loop.
+
+    ``confirm_preagreement`` is withheld unless recording is on -- a commitment claims a
+    moment of audio and there is none -- while the award prompt went on ordering it. On the
+    30 Aug award call the carrier confirmed the recap, the model reached for the tool it had
+    been told to use, found nothing of that name, and called ``verify_caller`` seventeen
+    times in thirty seconds: one "hold on a sec" every two seconds until the carrier hung up.
+    """
+    settings = _settings(
+        recording_enabled=recording,
+        recording_consent_notice="This call is recorded." if recording else "",
+    )
+    assistant = build_assistant(PROFILE, _context(phase), settings)
+
+    prompt = str(assistant["model"]["messages"][0]["content"])
+    given = {
+        tool["function"]["name"]
+        for tool in assistant["model"]["tools"]
+        if isinstance(tool, dict)
+    }
+    ordered = {name for name in TOOL_ARGUMENT_MODELS if name in prompt}
+
+    assert ordered <= given, f"{phase.value} prompt names tools it was not given: {ordered - given}"
+
+
 def test_recording_notice_is_spoken_before_the_greeting() -> None:
     assistant = build_assistant(PROFILE, _context(), _settings())
     assert str(assistant["firstMessage"]).startswith("This call is recorded")

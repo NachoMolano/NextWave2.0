@@ -16,6 +16,62 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T09:47-0500 · agent, config, main · diego
+
+**The empty report model is set, and an empty one can no longer reach OpenAI.**
+`OPENAI_REPORT_MODEL` was blank, so `responses.parse` was called with `model=""` and every
+call brief since deploy died on `The requested model '' does not exist` -- a 400 that reads
+like a broken request rather than the unset variable it was. `report()` now checks the id
+first and raises naming the variable, spending no API call. Local `.env` is set to
+`gpt-4.1-mini`, verified against the real API on an anchored two-turn transcript; it returns
+the full `_ReportExtraction` with offsets intact. **The Render service still needs
+`OPENAI_REPORT_MODEL` set by hand** -- `render.yaml` keeps it `sync: false`, and no model id
+belongs in the repo.
+
+**A `demo` deployment now says what configuration it is missing.** `production_errors()`
+returned `()` unless `ENVIRONMENT=production`, and the deploy runs as `demo`, so the gate
+that lists `OPENAI_REPORT_MODEL`, `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL` and `MANAGER_EMAIL`
+never once looked at the environment placing real calls to real carriers. Split out
+`Settings.missing_keys()`, which applies to every non-`local` environment; `production` still
+refuses to boot, `demo` logs `config.incomplete` at startup and reports `config: incomplete`
+with the missing names on `/health`. Names only, never values, and still HTTP 200 -- an
+incomplete demo is running, not down, and a backend that refuses to start minutes before a
+demo is the worse failure.
+→ Affects: Track D and Track E. `Settings.missing_keys` is new; `production_errors` keeps its
+signature and its meaning. `/health` gained two optional keys.
+
+## 2026-08-30T08:43-0500 · agent, vapi · diego
+
+**The award call looped because the prompt ordered a tool the assistant did not have.**
+`confirm_preagreement` is withheld unless `RECORDING_ENABLED=true` -- a commitment claims a
+moment of audio and without a recording there is none -- and the award prompt went on telling
+the model to use it. On the 30 Aug award call for OP-MZO-0006 the carrier confirmed the recap
+at 51s, and the model then called `verify_caller` **seventeen times in thirty seconds**, each
+returning "matches" in about a second, each triggering another "hold on a sec", until the
+carrier hung up. `build_runtime_system_prompt` now takes `can_confirm`, wired from the same
+setting that builds the tool list, and the award phase without it says: recap, get the spoken
+confirmation, say the team sends the written confirmation, close. It also says plainly never to
+use `verify_caller` on a call we placed to a number on file. A parametrized test over every
+phase, with recording on and off, asserts the shipped prompt never names a tool the shipped
+assistant lacks.
+→ Affects: Track B and Track D. `build_runtime_system_prompt` gained a keyword argument.
+
+**A failed call brief no longer switches off the post-call workflow.** `_handle_end_of_call_report`
+returned as soon as the report model raised, on the grounds that the brief is a convenience --
+but the written confirmation to the carrier and the promotion of a commitment to `COMMITTED`
+both hang off `after_report`, one line further down, and neither is a convenience. In
+production `OPENAI_REPORT_MODEL` is empty, so every report fails with
+`The requested model '' does not exist` and the entire notification path had been off since
+deploy. The workflow now runs on a placeholder `CallReport` that says no brief was generated;
+nothing is written to `call_reports`, because nothing generated one.
+→ Affects: Track B, Track D, Track E.
+
+**Deployment gaps found while reading the 30 Aug run, none of them fixable from the repo:**
+`RECORDING_ENABLED` unset (0 of 25 calls carry a recording, and no commitment has ever existed
+in this database), `OPENAI_REPORT_MODEL` unset, `RESEND_API_KEY` / `NOTIFY_FROM_EMAIL` unset
+(the one notification ever attempted failed with "RESEND_API_KEY not configured"), and
+`MANAGER_EMAIL` unset (`award.alert_skipped`).
+
 ## 2026-08-30T08:18-0500 · domain, policy, tools, jobs, api, agent, frontend · diego
 
 **One round.** Closing a market planned a renegotiation round and dialled every carrier who

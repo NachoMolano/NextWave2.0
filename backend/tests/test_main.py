@@ -37,6 +37,36 @@ def test_production_refuses_to_start_without_readiness_gates() -> None:
         create_app(Settings(environment="production"))
 
 
+def test_a_demo_deployment_reports_the_keys_it_is_missing() -> None:
+    """The deploy runs as ``demo``, so the production gate never looked at it.
+
+    OPENAI_REPORT_MODEL, RESEND_API_KEY and MANAGER_EMAIL were all empty on a deployment
+    placing real calls, and nothing said so: /health answered a flat "ok" while every call
+    brief and every written confirmation failed. A demo still boots -- refusing to start
+    minutes before a demo is the worse failure -- but it says what is missing.
+    """
+    # _env_file=None: the assertion is about an unset key, and a developer's own .env
+    # setting it would quietly delete the test.
+    app = create_app(Settings(environment="demo", _env_file=None))
+
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+
+    assert body["status"] == "ok"
+    assert body["config"] == "incomplete"
+    assert "OPENAI_REPORT_MODEL" in body["missing"]
+    assert "RESEND_API_KEY" in body["missing"]
+
+
+def test_a_local_run_needs_none_of_the_deployment_keys() -> None:
+    app = create_app(Settings(environment="local", _env_file=None))
+
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+
+    assert body == {"status": "ok", "environment": "local"}
+
+
 def test_create_app_mounts_every_integrated_surface() -> None:
     app = create_app(Settings(supabase_url="", supabase_secret_key=""))
 
@@ -81,9 +111,7 @@ async def test_award_report_sends_official_recap_and_books_only_after_delivery()
             terms={"amount": "8100 USD", "pickup": "2026-09-03T08:00:00Z"},
         )
     )
-    after_report = build_after_report(
-        store, notifier, coordinator, Settings(), now=lambda: NOW
-    )
+    after_report = build_after_report(store, notifier, coordinator, Settings(), now=lambda: NOW)
 
     await after_report(call, CallReport(call_id="call-1", summary="Carrier confirmed."))
 

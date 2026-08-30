@@ -65,6 +65,14 @@ class OpenAIReportModel:
         self._client = client
 
     async def report(self, call_id: str, turns: list[Turn], context: CallContext) -> CallReport:
+        if not self._model.strip():
+            # An empty model id reaches the provider as
+            # "The requested model '' does not exist" -- a 400 that reads like a broken
+            # request rather than the unset environment variable it actually is. Name the
+            # variable here, so the log says what to set instead of what OpenAI refused.
+            raise RuntimeError(
+                "OPENAI_REPORT_MODEL is not configured; no call brief can be generated"
+            )
         transcript = "\n".join(
             f"[{turn.offset_ms if turn.offset_ms is not None else 'unanchored'} ms] "
             f"{turn.speaker}: {turn.text}"
