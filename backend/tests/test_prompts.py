@@ -80,13 +80,57 @@ def test_status_check_collects_eta_without_authorizing_changes(
     assert "escalate" in combined
 
 
-def test_no_greeting_leaks_mandate_figures(
-    profile: CompanyProfile, context: CallContext
-) -> None:
+def test_no_greeting_leaks_mandate_figures(profile: CompanyProfile, context: CallContext) -> None:
     for phase in CallPhase:
         greeting = build_greeting(profile, context.model_copy(update={"phase": phase}))
         for figure in ("9000", "9,000", "8200", "8,200"):
             assert figure not in greeting
+
+
+def test_rfq_uses_a_warm_finite_negotiation_and_quote_tool(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    rfq = context.model_copy(update={"phase": CallPhase.RFQ})
+    prompt = build_system_prompt(profile, rfq).lower()
+    runtime = build_runtime_system_prompt(profile, rfq).lower()
+
+    assert "good moment to discuss it" in prompt
+    assert "lowest workable price" in prompt
+    assert "competitive alternatives" in prompt
+    assert "invented competing quote" in prompt
+    assert "propose_quote" in runtime
+    assert "never call confirm_preagreement" in runtime
+    assert "never imply booking" in runtime
+
+
+def test_booking_confirms_exact_terms_without_renegotiating(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    award = context.model_copy(update={"phase": CallPhase.AWARD})
+    prompt = build_system_prompt(profile, award).lower()
+    runtime = build_runtime_system_prompt(profile, award).lower()
+
+    assert "not sourcing, comparing, or" in prompt
+    assert "negotiating on this call" in prompt
+    assert "explicit verbal confirmation" in prompt
+    assert "confirm_preagreement" in runtime
+    assert "never use propose_quote" in runtime
+    assert "written confirmation" in runtime
+
+
+def test_inbound_listens_verifies_and_reports_without_promising_resolution(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    inbound = context.model_copy(update={"phase": CallPhase.INBOUND})
+    prompt = build_system_prompt(profile, inbound).lower()
+    runtime = build_runtime_system_prompt(profile, inbound).lower()
+
+    assert "predisposed to listen" in prompt
+    assert "verify_caller" in prompt
+    assert "lookup_order" in prompt
+    assert "report_incident" in prompt
+    assert "member of the team will contact them" in prompt
+    assert "never promise a decision or a callback time" in runtime
 
 
 def test_profile_and_context_mapping_is_explicit() -> None:
