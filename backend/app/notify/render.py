@@ -19,6 +19,7 @@ from app.domain import (
 
 __all__ = [
     "render_award_request",
+    "render_award_request_with_minutes",
     "render_commitment_email",
     "render_incident_report",
     "render_not_selected_email",
@@ -100,6 +101,44 @@ Review and approve or reject this exact option in the portal."""
         body=body,
         order_id=comparison.order_id,
     )
+
+
+def render_award_request_with_minutes(
+    comparison: Comparison,
+    to_address: str,
+    minutes: list[tuple[str, CallReport | None]],
+) -> OutboundMessage:
+    """Render the approval alert plus the evidence summary from every proposal call."""
+    base = render_award_request(comparison, to_address)
+    sections: list[str] = []
+    for carrier_name, report in minutes:
+        if report is None:
+            sections.append(f"{carrier_name}\n- No call summary was generated.")
+            continue
+        evidence = [
+            *(_evidence_text(item) for item in report.quoted_prices),
+            *(_evidence_text(item) for item in report.actions),
+            *(_evidence_text(item) for item in report.agreement_candidates),
+        ]
+        sections.append(
+            "\n".join(
+                [
+                    carrier_name,
+                    f"- Summary: {report.summary}",
+                    f"- Objections: {'; '.join(report.objections) or 'None reported'}",
+                    f"- Conditions: {'; '.join(report.conditions) or 'None reported'}",
+                    "- Timestamped evidence:",
+                    *(f"  - {item}" for item in evidence),
+                ]
+            )
+        )
+    body = (
+        f"{base.body}\n\nNegotiation call minutes\n"
+        f"{chr(10).join(sections) or 'No call minutes available.'}\n\n"
+        "This email is notification only. It cannot approve or award a carrier. "
+        "Open the dashboard approval request to make the decision."
+    )
+    return base.model_copy(update={"body": body})
 
 
 def render_incident_report(

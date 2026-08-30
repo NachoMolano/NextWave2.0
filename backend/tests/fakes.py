@@ -278,6 +278,31 @@ class InMemoryStore:
         self.deliveries.append((message, result))
         return f"notification-{len(self.deliveries)}"
 
+    async def notifications_for(
+        self, *, order_id: str | None = None, approval_id: str | None = None
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "id": f"notification-{index}",
+                "order_id": message.order_id,
+                "call_id": message.call_id,
+                "commitment_id": message.commitment_id,
+                "approval_id": message.approval_id,
+                "channel": message.channel,
+                "to_address": message.to_address,
+                "subject": message.subject,
+                "body": message.body,
+                "status": result.status,
+                "provider_message_id": result.provider_message_id,
+                "error": result.error,
+                "sent_at": result.sent_at,
+                "created_at": result.sent_at,
+            }
+            for index, (message, result) in reversed(list(enumerate(self.deliveries, start=1)))
+            if (order_id is None or message.order_id == order_id)
+            and (approval_id is None or message.approval_id == approval_id)
+        ]
+
 
 class FakeCallPlacer:
     """Records what would have been dialled. Never touches the network.

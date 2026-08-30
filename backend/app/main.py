@@ -44,7 +44,7 @@ from app.domain import (
     Store,
 )
 from app.notify.render import (
-    render_award_request,
+    render_award_request_with_minutes,
     render_commitment_email,
     render_incident_report,
     render_not_selected_email,
@@ -260,7 +260,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.manager_email.strip():
             log.warning("award.alert_skipped", detail="MANAGER_EMAIL is not configured")
             return
-        message = render_award_request(comparison, settings.manager_email).model_copy(
+        minutes: list[tuple[str, CallReport | None]] = []
+        for entry in comparison.entries:
+            quote = await store.quote(entry.quote_id)
+            report = await store.report_for(quote.call_id) if quote is not None else None
+            minutes.append((entry.carrier_name, report))
+        message = render_award_request_with_minutes(
+            comparison, settings.manager_email, minutes
+        ).model_copy(
             update={"approval_id": approval.id}
         )
         result = await notifier.send(message)

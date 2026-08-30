@@ -25,7 +25,9 @@ from app.domain import (
     Carrier,
     Commitment,
     CommitmentMode,
+    DeliveryStatus,
     Money,
+    NotificationChannel,
     Order,
     OrderStatus,
     QuoteRow,
@@ -41,6 +43,7 @@ __all__ = [
     "MandateView",
     "NewOrderRequest",
     "NextAction",
+    "NotificationDelivery",
     "OrderAggregate",
     "OrderSummary",
     "SecurityModeRequest",
@@ -130,6 +133,27 @@ class ApprovalDecisionRequest(BaseModel):
 
 
 # --------------------------------------------------------------------------- what it reads back
+
+
+class NotificationDelivery(BaseModel):
+    """Persisted provider-acceptance evidence for the manager dashboard."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    order_id: str | None = None
+    call_id: str | None = None
+    commitment_id: str | None = None
+    approval_id: str | None = None
+    channel: NotificationChannel
+    to_address: str
+    subject: str | None = None
+    body: str
+    status: DeliveryStatus
+    provider_message_id: str | None = None
+    error: str | None = None
+    sent_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 class MandateView(BaseModel):

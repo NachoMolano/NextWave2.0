@@ -20,6 +20,7 @@ from app.domain import (
 )
 from app.notify.render import (
     render_award_request,
+    render_award_request_with_minutes,
     render_commitment_email,
     render_incident_report,
     render_not_selected_email,
@@ -96,6 +97,28 @@ def test_award_and_incident_templates_include_required_facts(report: CallReport)
     assert whatsapp.channel is NotificationChannel.WHATSAPP
     assert whatsapp.subject is None
     assert len(whatsapp.body) < len(email.body)
+
+    minutes = render_award_request_with_minutes(
+        comparison,
+        "manager@example.com",
+        [
+            (
+                "Ruta Uno",
+                CallReport(
+                    call_id="call-quote-1",
+                    summary="Final all-in offer confirmed.",
+                    objections=["Morning pickup is difficult"],
+                    conditions=["Subject to chassis availability"],
+                    quoted_prices=[{"text": "8,500 USD all-in", "offset_ms": 65_432}],
+                ),
+            )
+        ],
+    )
+    assert "Negotiation call minutes" in minutes.body
+    assert "Final all-in offer confirmed" in minutes.body
+    assert "01:05.432" in minutes.body
+    assert "cannot approve" in minutes.body
+    assert "dashboard approval request" in minutes.body
 
 
 def test_not_selected_email_is_courteous_and_non_committal() -> None:
