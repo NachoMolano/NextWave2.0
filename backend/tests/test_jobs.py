@@ -211,6 +211,40 @@ async def test_a_call_that_never_ended_still_closes_the_market_after_the_timeout
     assert await jobs.timeout_open_markets(store, SETTINGS, now=now) == ["order-1"]
 
 
+async def test_a_call_that_never_started_is_closed_when_the_market_closes() -> None:
+    """Vapi ended one of the 30 Aug calls with call.start.error-get-transport and sent no
+    webhook, so its row sat at QUEUED with no ended_at next to two finished calls. The
+    market was never blocked, but the portal showed a call that would never move."""
+    store = quoting_world(call_status=CallStatus.QUEUED, started_at=NOW - timedelta(minutes=45))
+
+    assert await jobs.timeout_open_markets(store, SETTINGS, now=now) == ["order-1"]
+
+    # Only the RFQ calls: closing the market also plans a renegotiation round, whose fresh
+    # call rows are correctly queued and must not be touched.
+    rfq = [c for c in await store.calls_for("order-1") if c.phase == "rfq"]
+    assert [c.status for c in rfq] == [CallStatus.FAILED]
+    assert all(c.ended_at == NOW for c in rfq)
+
+
+async def test_closing_the_market_does_not_rewrite_a_call_that_ended_properly() -> None:
+    """FAILED is for calls that never reported. A call that ended keeps its own ending."""
+    store = quoting_world(call_status=CallStatus.ENDED, started_at=NOW - timedelta(minutes=5))
+    before = {
+        c.id: (c.status, c.ended_at)
+        for c in await store.calls_for("order-1")
+        if c.phase == "rfq"
+    }
+
+    await jobs.timeout_open_markets(store, SETTINGS, now=now)
+
+    after = {
+        c.id: (c.status, c.ended_at)
+        for c in await store.calls_for("order-1")
+        if c.phase == "rfq"
+    }
+    assert after == before
+
+
 async def test_a_market_still_inside_its_timeout_is_left_open() -> None:
     store = quoting_world(call_status=CallStatus.ACTIVE, started_at=NOW - timedelta(minutes=2))
 

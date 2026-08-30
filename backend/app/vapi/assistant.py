@@ -318,6 +318,25 @@ def build_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
         for name, model in enabled_models.items()
     ]
 
+    # Without this the agent has no way to hang up. On the 30 Aug calls it said "I will end
+    # the call now", then sat in dead air until the carrier asked "so are you gonna hang
+    # up?" and hung up themselves -- thirty seconds of silence on every call, and
+    # endedReason "customer-ended-call" on a call we placed. It carries no server block:
+    # ending a call decides nothing, so there is nothing for policy to authorize.
+    tools.append(
+        {
+            "type": "endCall",
+            "function": {
+                "name": "endCall",
+                "description": (
+                    "Hang up. Use it once you have said goodbye and the other side has "
+                    "said goodbye back, or when they say they are hanging up. Never use "
+                    "it while a question is open or a transfer is in progress."
+                ),
+            },
+        }
+    )
+
     # No destinations: an empty transferCall is what makes Vapi send
     # transfer-destination-request to our server URL and let us decide -- or refuse.
     tools.append(

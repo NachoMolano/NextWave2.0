@@ -639,6 +639,10 @@ for a human or escalation is required, use transferCall promptly and stop negoti
 you have, the negotiation is over: say a colleague is coming and ask them to stay on the
 line, then ask nothing further -- not the rate, not the date, not the equipment. Answer what
 they ask, agree to nothing, and do not promise what the person will decide.
+When the call is genuinely finished -- you have read the terms back, said how this ends, and
+you have both said goodbye -- call endCall. Saying you will hang up is not hanging up: leave
+it and they sit listening to silence and hang up on you. Never call it with a question open,
+before the read-back, or while a transfer is in progress.
 
 CALL PHASE
 {phase}

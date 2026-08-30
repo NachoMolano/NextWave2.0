@@ -432,14 +432,33 @@ def test_the_comparison_carries_the_cap_it_was_ranked_against() -> None:
 
 
 def _award_approval(store: PortalMemoryStore, order_id: str) -> str:
-    """Put an award decision in the human inbox, the way tools/market.py will."""
+    """Put an award decision in the human inbox, the way tools/market.py will.
+
+    ``winner_quote_id`` is the field that makes this approvable. It used to be absent, which
+    made every test here exercise a shape ``rank()`` never produces -- and hid the fact that
+    approving an award with no winner reached ``market.award`` and died on a ValueError.
+    """
     return asyncio.run(
         store.raise_approval(
             Approval(
                 order_id=order_id,
                 kind=ApprovalKind.AWARD_APPROVAL,
                 reason=ApprovalReason.AWARD_SELECTED,
-                context={"comparison": []},
+                context={"comparison": [], "winner_quote_id": "quote-1"},
+            )
+        )
+    )
+
+
+def _no_candidate_approval(store: PortalMemoryStore, order_id: str) -> str:
+    """What the market raises when nothing cleared the ceiling: no winner to award."""
+    return asyncio.run(
+        store.raise_approval(
+            Approval(
+                order_id=order_id,
+                kind=ApprovalKind.AWARD_APPROVAL,
+                reason=ApprovalReason.NO_ELIGIBLE_CANDIDATE,
+                context={"entries": [], "winner_quote_id": None},
             )
         )
     )
@@ -472,6 +491,40 @@ def test_approving_an_award_releases_the_award_call() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "approved"
     assert market.awarded == [order_id]
+
+
+def test_approving_an_award_with_no_candidate_is_a_409_that_says_why() -> None:
+    """The portal's Approve button did nothing at all: market.award raised
+    ValueError("the approval carries no winning quote"), which surfaced as a 500 the
+    frontend swallowed. A person cannot award a comparison with no eligible carrier, and
+    being told so is the difference between a refusal and a broken button."""
+    client, store, market, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    approval_id = _no_candidate_approval(store, order_id)
+
+    response = client.post(
+        f"/api/approvals/{approval_id}/decision", json={"status": "approved"}
+    )
+
+    assert response.status_code == 409
+    assert "no eligible carrier" in response.json()["detail"]
+    assert market.awarded == []
+    # The approval is still open, so the operator can act on it once the market reopens.
+    assert len(client.get("/api/approvals").json()) == 1
+
+
+def test_rejecting_an_award_with_no_candidate_is_allowed() -> None:
+    """Refusing is always available: it is the one decision that needs no winner."""
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    approval_id = _no_candidate_approval(store, order_id)
+
+    response = client.post(
+        f"/api/approvals/{approval_id}/decision", json={"status": "rejected"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
 
 
 def test_a_second_award_is_a_409_not_a_500() -> None:
