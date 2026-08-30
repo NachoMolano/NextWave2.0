@@ -40,9 +40,15 @@ from app.domain import (
     DialPlan,
     EventRow,
     Notifier,
+    Order,
     Store,
 )
-from app.notify.render import render_award_request, render_commitment_email, render_incident_report
+from app.notify.render import (
+    render_award_request,
+    render_commitment_email,
+    render_incident_report,
+    render_not_selected_email,
+)
 from app.notify.sender import NullNotifier, ResendTwilioNotifier
 from app.store.supabase import SupabaseStore
 from app.tools.calls import CallLedger
@@ -241,6 +247,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await notifier.send(message)
         await store.record_delivery(message, result)
 
+    async def notify_award_decision(order: Order, winner_quote_id: str) -> None:
+        quotes = await store.quotes_for(order.id)
+        winner = await store.quote(winner_quote_id)
+        if winner is None:
+            return
+        notified: set[str] = set()
+        for quote in quotes:
+            if quote.carrier_id == winner.carrier_id or quote.carrier_id in notified:
+                continue
+            carrier = await store.carrier(quote.carrier_id)
+            if carrier is None or not carrier.email:
+                continue
+            claimed = await store.append_event(
+                EventRow(
+                    order_id=order.id,
+                    type="award.not_selected_notification_claimed",
+                    payload={"carrier_id": carrier.id, "winner_quote_id": winner_quote_id},
+                    idempotency_key=f"award-not-selected:{order.id}:{carrier.id}:{winner_quote_id}",
+                )
+            )
+            if not claimed:
+                continue
+            notified.add(carrier.id)
+            message = render_not_selected_email(
+                order_id=order.id,
+                reference=order.reference,
+                carrier_name=carrier.name,
+                to_address=carrier.email,
+            )
+            result = await notifier.send(message)
+            await store.record_delivery(message, result)
+
     after_report = build_after_report(store, notifier, commitments, settings, now=now_utc)
 
     # Built here so the same capability instances are injected into every router. In
@@ -305,6 +343,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             now=now_utc,
             settings=settings,
             notifier=notifier,
+            notify_award_decision=notify_award_decision,
         ),
         prefix="/api",
     )

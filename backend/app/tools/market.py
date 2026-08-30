@@ -100,7 +100,7 @@ class Market:
         if not claimed:
             return []
 
-        carriers = await self._store.carriers_for_rfq(count)
+        carriers = await self._store.carriers_for_rfq(count if count > 0 else 2_147_483_647)
         if len(carriers) < 3:
             # The brief requires at least three. Fewer is not a thin market to push through;
             # it is a market with no comparison in it, and a comparison is the deliverable.
@@ -196,6 +196,55 @@ class Market:
                     "change_requested": (
                         "Please offer your best improved complete all-in rate and restate every "
                         "pickup, equipment, inclusion, exclusion, and validity term."
+                    ),
+                }
+            )
+            call_id = await self._store.upsert_call(
+                CallRecord(
+                    vapi_call_id=f"pending:renegotiation:{order.id}:{carrier.id}",
+                    direction=CallDirection.OUTBOUND,
+                    phase=CallPhase.RENEGOTIATION.value,
+                    order_id=order.id,
+                    carrier_id=carrier.id,
+                    to_number=carrier.phone,
+                    started_at=self._now(),
+                    context=context.model_dump(mode="json"),
+                )
+            )
+            plans.append(
+                DialPlan(
+                    call_id=call_id,
+                    carrier=carrier,
+                    to_number=carrier.phone,
+                    context=context.model_dump(mode="json"),
+                )
+            )
+
+        # Every carrier reached in the first round gets the same second opportunity, even
+        # when their first call produced no complete quote.  They have no standing terms to
+        # renegotiate, so the context says that plainly instead of inventing one.
+        try:
+            first_round = await cast(CallListingStore, self._store).calls_for(order.id)
+        except (AttributeError, NotImplementedError):
+            first_round = []
+        for call in first_round:
+            if call.phase != CallPhase.RFQ.value or not call.carrier_id:
+                continue
+            if call.carrier_id in seen_carriers:
+                continue
+            carrier = await self._store.carrier(call.carrier_id)
+            if carrier is None or not carrier.phone:
+                continue
+            seen_carriers.add(carrier.id)
+            report = await self._store.report_for(call.id) if call.id else None
+            report_detail = f" Prior call evidence: {report.summary}" if report else ""
+            context = self._context_for(order, carrier, len(comparison.entries), None).model_copy(
+                update={
+                    "phase": CallPhase.RENEGOTIATION,
+                    "agreed_terms": f"No complete quotation was recorded.{report_detail}",
+                    "change_requested": (
+                        "Please provide your best complete all-in rate and every pickup, "
+                        "equipment, inclusion, exclusion, and validity term."
                     ),
                 }
             )
@@ -544,7 +593,13 @@ class Market:
             raise
 
         await self._store.save_order(
-            order.model_copy(update={"status": OrderStatus.AWARDING, "awarded_quote_id": quote_id})
+            order.model_copy(
+                update={
+                    "status": OrderStatus.AWARDING,
+                    "awarded_quote_id": quote_id,
+                    "assigned_carrier_id": existing.carrier_id if existing else None,
+                }
+            )
         )
         await self._store.append_event(
             EventRow(

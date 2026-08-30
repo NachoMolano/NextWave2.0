@@ -508,7 +508,9 @@ def build_system_prompt(profile: CompanyProfile, context: CallContext) -> str:
     return "\n\n".join(blocks)
 
 
-def build_runtime_system_prompt(profile: CompanyProfile, context: CallContext) -> str:
+def build_runtime_system_prompt(
+    profile: CompanyProfile, context: CallContext, *, strict_security: bool = True
+) -> str:
     """Latency-optimized compilation of the canonical personality and safety rules.
 
     The long prompt above remains the readable specification. This form removes examples
@@ -621,6 +623,20 @@ def build_runtime_system_prompt(profile: CompanyProfile, context: CallContext) -
             "quote or confirmation action for a commercial change."
         ),
     }[context.phase]
+    if not strict_security:
+        return f"""You are {profile.agent_name}, {profile.agent_role} for {profile.display_name}.
+Speak natural {_language_name(profile.primary_language)} in short conversational turns. Listen,
+ask one clear question at a time, and switch languages when the caller does. Never invent a
+number, date, identity, provider result, or missing term. Use the phase tools to record what the
+caller actually says; server policy decides authorization and booking.
+
+CALL PHASE
+{phase}
+
+PHASE TOOL PROTOCOL
+{tool_protocol}
+
+{_runtime_operation(profile, context)}"""
     fast_fact = _runtime_pickup_answer(context)
     stable = f"""ROLE
 You are {profile.agent_name}, {profile.agent_role} for {profile.display_name},

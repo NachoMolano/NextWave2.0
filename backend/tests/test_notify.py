@@ -22,6 +22,7 @@ from app.notify.render import (
     render_award_request,
     render_commitment_email,
     render_incident_report,
+    render_not_selected_email,
 )
 from app.notify.sender import NullNotifier, ResendTwilioNotifier
 
@@ -95,6 +96,17 @@ def test_award_and_incident_templates_include_required_facts(report: CallReport)
     assert whatsapp.channel is NotificationChannel.WHATSAPP
     assert whatsapp.subject is None
     assert len(whatsapp.body) < len(email.body)
+
+
+def test_not_selected_email_is_courteous_and_non_committal() -> None:
+    message = render_not_selected_email(
+        order_id="order-1",
+        reference="OP-1042",
+        carrier_name="Carrier One",
+        to_address="dispatch@example.com",
+    )
+    assert "not selected" in message.body
+    assert "future opportunities" in message.body
 
 
 def _settings() -> Settings:

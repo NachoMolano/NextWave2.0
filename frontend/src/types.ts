@@ -421,6 +421,7 @@ export interface Session {
   actor: string
   /** How many carriers an RFQ dials. Server settings, so the authorize button can name it. */
   rfq_carrier_count: number
+  strict_conversation_security: boolean
 }
 
 export interface EmailTestRequest {

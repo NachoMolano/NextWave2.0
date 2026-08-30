@@ -130,6 +130,7 @@ class FakeMarket:
             return []
         if self.store is not None:
             await self.store.set_order_status(str(order.id), OrderStatus.QUOTING)
+        effective_count = count or 3
         return [
             DialPlan(
                 call_id=f"call-{index}",
@@ -139,7 +140,7 @@ class FakeMarket:
                 to_number=f"+5255000000{index}",
                 context={},
             )
-            for index in range(count)
+            for index in range(effective_count)
         ]
 
     async def mark_dial_round_failed(self, plans: list[DialPlan]) -> None:
@@ -491,7 +492,7 @@ def test_opening_the_market_asks_for_at_least_three_carriers() -> None:
 
     client.post(f"/api/orders/{order_id}/rfq")
 
-    assert market.planned == [(order_id, 3)]
+    assert market.planned == [(order_id, 0)]
 
 
 def test_opening_the_market_actually_dials() -> None:
@@ -1066,7 +1067,15 @@ def test_portal_never_requires_a_bearer_token() -> None:
     body = client.get("/api/session").json()
     assert body["actor"] == "portal-operator"
     # The authorize button names the number it is about to ring; it must come from settings.
-    assert body["rfq_carrier_count"] == 3
+    assert body["rfq_carrier_count"] == 0
+
+
+def test_debug_security_mode_defaults_off_and_can_be_enabled() -> None:
+    client = _app_with(Settings())
+    assert client.get("/api/session").json()["strict_conversation_security"] is False
+    changed = client.post("/api/security-mode", json={"enabled": True})
+    assert changed.status_code == 200
+    assert changed.json()["strict_conversation_security"] is True
 
 
 def test_portal_uses_configured_audit_identity_without_login() -> None:

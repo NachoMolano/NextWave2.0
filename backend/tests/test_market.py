@@ -93,6 +93,11 @@ async def test_plan_rfq_creates_one_call_per_carrier() -> None:
     assert all(call.phase == CallPhase.RFQ.value for call in store.calls.values())
 
 
+async def test_zero_carrier_limit_calls_every_eligible_carrier() -> None:
+    _store, market = seeded(carriers=5)
+    assert len(await market.plan_rfq(order(), 0)) == 5
+
+
 async def test_the_frozen_context_carries_the_market_as_of_dial_time() -> None:
     """The first call negotiates with nothing behind it; a later one has numbers."""
     store, market = seeded()
@@ -307,6 +312,22 @@ async def test_renegotiation_context_uses_the_first_call_report_as_guidance() ->
     assert quote_id in {entry.quote_id for entry in comparison.entries}
 
 
+async def test_renegotiation_calls_every_first_round_carrier_even_without_a_quote() -> None:
+    store, market = seeded()
+    await market.plan_rfq(order(), 0)
+    await store.add_quote(quote("carrier-1", 850_000))
+
+    plans = await market.plan_renegotiation(order(), await market.rank(order()))
+
+    assert {plan.carrier.id for plan in plans} == {"carrier-1", "carrier-2", "carrier-3"}
+    missing_quote_contexts = [
+        str(plan.context["agreed_terms"])
+        for plan in plans
+        if plan.carrier.id in {"carrier-2", "carrier-3"}
+    ]
+    assert all("No complete quotation was recorded" in text for text in missing_quote_contexts)
+
+
 async def test_an_award_needs_an_approved_approval() -> None:
     """Nothing else authorizes one. An open request is not a decision."""
     store, market = seeded()
@@ -342,6 +363,7 @@ async def test_a_granted_award_accepts_exactly_one_quote() -> None:
     assert store.quotes[quote_id].status is QuoteStatus.ACCEPTED
     order_row = await store.order("order-1")
     assert order_row is not None and order_row.status is OrderStatus.AWARDING
+    assert order_row.assigned_carrier_id == "carrier-1"
 
 
 async def test_an_accepted_award_plans_one_exact_confirmation_call() -> None:

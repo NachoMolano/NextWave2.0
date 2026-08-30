@@ -364,6 +364,16 @@ def test_runtime_inbound_never_speaks_the_verification_result(
     assert "never compose an eta yourself" in runtime
 
 
+def test_relaxed_runtime_is_shorter_but_keeps_server_authority(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    strict = build_runtime_system_prompt(profile, context, strict_security=True)
+    relaxed = build_runtime_system_prompt(profile, context, strict_security=False)
+    assert len(relaxed) < len(strict) / 2
+    assert "server policy decides authorization and booking" in relaxed
+    assert "PHASE TOOL PROTOCOL" in relaxed
+
+
 def test_a_spoken_date_range_cannot_fuse_into_one_day(
     profile: CompanyProfile, context: CallContext
 ) -> None:

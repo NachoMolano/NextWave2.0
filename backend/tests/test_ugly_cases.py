@@ -697,6 +697,42 @@ async def test_a_repeated_handoff_request_does_not_stack_approvals() -> None:
     assert len(world.store.approvals) == 1
 
 
+async def test_an_unmatched_inbound_incident_is_visible_without_mutating_an_order() -> None:
+    world = World()
+    call_id = await world.call(
+        "vapi-unknown", phase="inbound", direction=CallDirection.INBOUND, order_id=None
+    )
+
+    await world.tools.report_incident(
+        call_id,
+        ReportIncidentArgs(subject=IncidentSubject.DELAY, detail="Caller reports a delay"),
+    )
+
+    approvals = list(world.store.approvals.values())
+    assert len(approvals) == 1
+    assert approvals[0].order_id is None
+    assert approvals[0].reason is ApprovalReason.IDENTITY_UNVERIFIED
+    stored_order = await world.store.order("order-1")
+    assert stored_order is not None and stored_order.status is OrderStatus.QUOTING
+
+
+async def test_a_deadline_status_report_is_always_escalated_as_a_breach() -> None:
+    world = World()
+    call_id = await world.call("vapi-status", phase="status_check")
+
+    await world.tools.report_incident(
+        call_id,
+        ReportIncidentArgs(
+            subject=IncidentSubject.DELAY,
+            detail="Truck is waiting for a replacement tire",
+            new_eta="September 5, 2026 at 15:00 UTC",
+        ),
+    )
+
+    approval = next(iter(world.store.approvals.values()))
+    assert approval.reason is ApprovalReason.DEADLINE_BREACH
+
+
 # --------------------------------------------------------------------------------- row 20
 
 

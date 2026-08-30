@@ -108,6 +108,8 @@ export const voltaApi = {
 
 /** The deployment identity recorded for actions made in the portal. */
   getSession: (): Promise<Session> => request('/api/session'),
+  setSecurityMode: (enabled: boolean): Promise<Session> =>
+    request('/api/security-mode', { method: 'POST', body: JSON.stringify({ enabled }) }),
 
   getProfile: (): Promise<BusinessProfile> => request('/api/profile'),
 

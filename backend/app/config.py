@@ -84,13 +84,15 @@ class Settings(BaseSettings):
 
     # --- Orchestration ---
     #: How many carriers one RFQ dials. The brief requires at least three.
-    rfq_carrier_count: int = 3
+    #: 0 means every active, on-file carrier. Set a positive value to cap a test campaign.
+    rfq_carrier_count: int = 0
     #: Vapi allows 10 concurrent calls by default; stay under it so a retry has room.
     max_concurrent_calls: int = 8
     #: How long a market stays open before jobs.py ranks what it has.
     rfq_timeout_minutes: int = 15
     #: How often the deadline sweep runs. OUTBOUND 2.
     sweep_interval_seconds: int = 60
+    strict_conversation_security: bool = False
 
     public_base_url: str = ""
     #: Recording is opt-in. Enabling it requires an approved consent/retention process.
@@ -111,6 +113,15 @@ class Settings(BaseSettings):
             "VAPI_SERVER_SECRET": self.vapi_server_secret,
             "SUPABASE_URL": self.supabase_url,
             "SUPABASE_SECRET_KEY": self.supabase_secret_key,
+            "PUBLIC_BASE_URL": self.public_base_url,
+            "VAPI_MODEL": self.vapi_model,
+            "VAPI_VOICE_ID": self.vapi_voice_id,
+            "VAPI_TRANSCRIBER": self.vapi_transcriber,
+            "OPENAI_API_KEY": self.openai_api_key,
+            "OPENAI_REPORT_MODEL": self.openai_report_model,
+            "RESEND_API_KEY": self.resend_api_key,
+            "NOTIFY_FROM_EMAIL": self.notify_from_email,
+            "MANAGER_EMAIL": self.manager_email,
         }
         missing = [name for name, value in required.items() if not value.strip()]
         if self.recording_enabled and not self.recording_consent_notice.strip():
