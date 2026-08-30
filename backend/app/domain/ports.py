@@ -75,8 +75,27 @@ class Store(Protocol):
         """The one commitment occupying the order's slot, if any."""
         ...
 
+    async def commitment(self, commitment_id: str) -> Commitment | None:
+        """One commitment by id, live or retired.
+
+        ``live_commitment`` cannot serve this: the recap gate and renegotiation both have to
+        read a row *after* it has left the live slot, and a superseded commitment is exactly
+        the row a human asks to see.
+        """
+        ...
+
     async def due_for_chase(self, now: datetime) -> list[Order]:
         """Orders whose delivery deadline has passed with nothing underway. OUTBOUND 2."""
+        ...
+
+    async def orders_in_status(self, status: OrderStatus) -> list[Order]:
+        """Every order currently in one status. The RFQ timeout's only way to find a market.
+
+        ``due_for_chase`` answers the delivery-deadline question and nothing else, so a
+        market still open in ``quoting`` -- because its last call never ended -- is
+        invisible without this. A human waiting forever for an approval that is never
+        requested is the failure it exists to prevent.
+        """
         ...
 
     # --- writes --------------------------------------------------------------------

@@ -114,6 +114,9 @@ class InMemoryStore:
             None,
         )
 
+    async def commitment(self, commitment_id: str) -> Commitment | None:
+        return self.commitments.get(commitment_id)
+
     async def due_for_chase(self, now: datetime) -> list[Order]:
         return [
             o
@@ -122,6 +125,9 @@ class InMemoryStore:
             and o.delivery_deadline < now
             and o.status not in DELIVERY_UNDERWAY
         ]
+
+    async def orders_in_status(self, status: OrderStatus) -> list[Order]:
+        return sorted((o for o in self.orders.values() if o.status is status), key=lambda o: o.id)
 
     # --- writes -------------------------------------------------------------------
 

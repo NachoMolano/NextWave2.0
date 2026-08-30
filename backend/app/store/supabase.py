@@ -423,6 +423,9 @@ class SupabaseStore:
         row = _one(res)
         return _to_commitment(row) if row else None
 
+    async def commitment(self, commitment_id: str) -> Commitment | None:
+        raise NotImplementedError(_UNIMPLEMENTED)
+
     async def due_for_chase(self, now: datetime) -> list[Order]:
         underway = [str(s) for s in DELIVERY_UNDERWAY]
         with _translate():
@@ -436,6 +439,9 @@ class SupabaseStore:
         return [_to_order(r) for r in _rows(res)]
 
     # --- writes -------------------------------------------------------------------
+
+    async def orders_in_status(self, status: OrderStatus) -> list[Order]:
+        raise NotImplementedError(_UNIMPLEMENTED)
 
     async def upsert_call(self, call: CallRecord) -> str:
         """Create or update by ``vapi_call_id``, without letting a late webhook erase evidence.
