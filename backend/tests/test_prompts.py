@@ -312,3 +312,50 @@ def test_runtime_inbound_never_speaks_the_verification_result(
     assert "must sound identical" in runtime
     # An incident carried new_eta="2024-06-14T23:59:00" -- a date in the wrong year.
     assert "never compose an eta yourself" in runtime
+
+
+def test_a_spoken_date_range_cannot_fuse_into_one_day(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """"September 2 to 5" is "September two to five" down a phone line.
+
+    A carrier on the 30 Aug call heard September twenty-fifth and quoted against it. The
+    fast fact is the one line the agent is told to say verbatim, so it is the one line that
+    must survive being spoken: month on both ends, days as ordinals.
+    """
+    rfq = context.model_copy(
+        update={
+            "phase": CallPhase.RFQ,
+            "pickup_window": "between September 2 and September 5, 2026",
+        }
+    )
+    runtime = build_runtime_system_prompt(profile, rfq)
+
+    assert "September 2nd through September 5th, 2026" in runtime
+    assert "September 2 to 5" not in runtime
+
+
+def test_the_agent_is_told_to_finish_the_call_before_ending_it(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """Both 30 Aug calls ended with the single word "Goodbye." the instant a tool answered,
+    leaving a carrier who had just given a rate with no idea whether it landed."""
+    runtime = build_runtime_system_prompt(
+        profile, context.model_copy(update={"phase": CallPhase.RFQ})
+    ).lower()
+
+    assert "a tool result is for you to act on, not to hang up on" in runtime
+    assert "only then may you call endcall" in runtime
+    assert "say the team will compare and come back in writing" in runtime
+
+
+def test_money_is_spoken_as_words_not_as_a_currency_code(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """"10000 MXN" was read aloud as "ten thousand meters X N"."""
+    runtime = build_runtime_system_prompt(
+        profile, context.model_copy(update={"phase": CallPhase.RFQ})
+    ).lower()
+
+    assert "say money in words, never as a code" in runtime
+    assert "take the year from today's date" in runtime

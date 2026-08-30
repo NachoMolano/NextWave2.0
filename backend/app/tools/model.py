@@ -27,7 +27,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -189,6 +189,9 @@ RESPONSES: dict[str, str] = {
 #: result that says "approved" hands it language to close a deal we have not authorized.
 FORBIDDEN_IN_RESULTS = ("approved", "booked", "confirmed", "agreed to", "we have a deal")
 
+#: How long a rate holds when the carrier did not say. See the note in ``propose_quote``.
+_UNSTATED_VALIDITY = timedelta(hours=2)
+
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 #: The only order-status moves a phone call may cause. Everything absent from this table is
@@ -284,9 +287,19 @@ class ModelTools:
         if isinstance(window_end, Ambiguous):
             window_end = None
         if isinstance(valid_until, Ambiguous) or valid_until is None:
-            # No stated validity is not "valid forever". Treat it as good for this call only,
-            # so a quote cannot be resurrected tomorrow against a mandate that has moved.
-            valid_until = self._now()
+            # No stated validity is not "valid forever" -- but it was not "already expired"
+            # either, which is what ``self._now()`` meant here. The row is written a fraction
+            # of a second after the check runs, so every quote whose carrier did not name a
+            # validity was born stale: policy denies on STALE_EVIDENCE before it looks at
+            # anything else, and two real quotes on OP-MZO-0003 came back "no eligible
+            # candidate" with a validity span of minus 0.19 seconds.
+            #
+            # A rate given with no validity is good for the round it was given in. This
+            # covers the market closing and a person deciding, and expires well before a
+            # mandate could move underneath it -- and ``rank()`` re-evaluates at approval
+            # time anyway, so a slow decision still fails closed rather than awarding on a
+            # figure nobody would honour.
+            valid_until = self._now() + _UNSTATED_VALIDITY
 
         key = _digest("propose_quote", call_id, args)
         anchor = await self._ledger.anchor_ms(call_id)
