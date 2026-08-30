@@ -162,6 +162,12 @@ class InMemoryStore:
         self.calls[call_id] = call.model_copy(update=update)
         return call_id
 
+    async def attach_vapi_call_id(self, call_id: str, vapi_call_id: str) -> None:
+        record = self.calls.get(call_id)
+        if record is None:
+            raise KeyError(call_id)
+        self.calls[call_id] = record.model_copy(update={"vapi_call_id": vapi_call_id})
+
     async def add_quote(self, quote: QuoteRow) -> str:
         quote_id = quote.id or _next_id("quote", self.quotes)
         self.quotes[quote_id] = quote.model_copy(update={"id": quote_id})
@@ -257,6 +263,13 @@ class InMemoryStore:
         order_id = existing.id if existing else (order.id or _next_id("order", self.orders))
         self.orders[order_id] = order.model_copy(update={"id": order_id})
         return order_id
+
+    async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool:
+        existing = self.orders.get(str(order.id))
+        if existing is None or existing.mandate_version != expected_version:
+            return False
+        self.orders[str(order.id)] = order
+        return True
 
     async def record_delivery(self, message: OutboundMessage, result: DeliveryResult) -> str:
         self.deliveries.append((message, result))

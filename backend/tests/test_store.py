@@ -435,3 +435,28 @@ async def test_an_unconfigured_store_reports_it_instead_of_failing_to_boot() -> 
 
     with pytest.raises(StoreUnavailable):
         await store.order("whatever")
+
+
+async def test_a_planned_call_is_bound_to_the_call_that_was_placed(world: World) -> None:
+    """The Vapi id does not exist until the dial returns, so the row is corrected after it.
+
+    Left undone, the webhook opens a second row under the real id carrying no order and no
+    context, and every tool call in the conversation correlates to that empty one.
+    """
+    planned = await world.store.upsert_call(
+        CallRecord(
+            vapi_call_id="pending:rfq:order-1",
+            direction=CallDirection.OUTBOUND,
+            phase="rfq",
+            order_id=world.order.id,
+            carrier_id=world.carrier.id,
+        )
+    )
+
+    await world.store.attach_vapi_call_id(planned, "vapi-placed-1")
+
+    found = await world.store.call_by_vapi_id("vapi-placed-1")
+    assert found is not None
+    assert found.id == planned, "the same row, not a second one"
+    assert found.order_id == world.order.id, "the context the campaign wrote survives"
+    assert await world.store.call_by_vapi_id("pending:rfq:order-1") is None

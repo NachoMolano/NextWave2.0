@@ -273,12 +273,11 @@ export interface SetMandateRequest {
   pickup_not_after: string
   delivery_deadline: string | null
   commitment_mode: CommitmentMode
-  set_by: string
+  expected_version: number
 }
 
 export interface ApprovalDecisionRequest {
   status: 'approved' | 'rejected' | 'handled' | 'expired'
-  decided_by: string
   note: string | null
 }
 

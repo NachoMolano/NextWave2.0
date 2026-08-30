@@ -517,6 +517,7 @@ class DeliveryStatus(StrEnum):
     PENDING = "pending"
     SENT = "sent"
     FAILED = "failed"
+    UNKNOWN = "unknown"
 
 
 class OutboundMessage(BaseModel):
@@ -535,8 +536,8 @@ class OutboundMessage(BaseModel):
 class DeliveryResult(BaseModel):
     """The outcome of one send attempt.
 
-    ``FAILED`` means **there was no commitment**, not that there was a defective one. A
-    sender returns this; it never raises, so the caller can leave a commitment unpromoted.
+    ``FAILED`` is a definite refusal before delivery. ``UNKNOWN`` means the provider may
+    have accepted the message, so automatic retry is forbidden. A sender never raises.
     """
 
     model_config = ConfigDict(frozen=True)

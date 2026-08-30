@@ -469,9 +469,7 @@ class SupabaseStore:
 
     async def commitment(self, commitment_id: str) -> Commitment | None:
         with _translate():
-            res = (
-                await self._db.table("commitments").select("*").eq("id", commitment_id).execute()
-            )
+            res = await self._db.table("commitments").select("*").eq("id", commitment_id).execute()
         row = _one(res)
         return _to_commitment(row) if row else None
 
@@ -559,6 +557,23 @@ class SupabaseStore:
         if not _rows(res):
             raise RowNotFound(f"call {existing.id} vanished during upsert")
         return str(existing.id)
+
+    async def attach_vapi_call_id(self, call_id: str, vapi_call_id: str) -> None:
+        """Point a planned row at the call that was actually placed.
+
+        Updates by row id rather than going through ``upsert_call``: that keys on
+        ``vapi_call_id``, so the placeholder and the real id look like two different calls
+        and the upsert would insert a second row instead of correcting the first.
+        """
+        with _translate():
+            res = (
+                await self._db.table("calls")
+                .update({"vapi_call_id": vapi_call_id})
+                .eq("id", call_id)
+                .execute()
+            )
+        if not _rows(res):
+            raise RowNotFound(f"call {call_id} not found while attaching {vapi_call_id}")
 
     async def add_quote(self, quote: QuoteRow) -> str:
         with _translate():
@@ -807,6 +822,20 @@ class SupabaseStore:
         if row is None:
             raise StoreError("upsert into orders returned no row")
         return str(row["id"])
+
+    async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool:
+        """Atomically replace an order only while its mandate version is still current."""
+        if not order.id:
+            return False
+        with _translate():
+            res = (
+                await self._db.table("orders")
+                .update(_order_row(order))
+                .eq("id", order.id)
+                .eq("mandate_version", expected_version)
+                .execute()
+            )
+        return bool(_rows(res))
 
     async def record_delivery(self, message: OutboundMessage, result: DeliveryResult) -> str:
         row: dict[str, Any] = {

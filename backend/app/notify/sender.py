@@ -29,7 +29,9 @@ class ResendTwilioNotifier:
             if message.channel is NotificationChannel.EMAIL:
                 return await self._send_email(message)
             return await self._send_whatsapp(message)
-        except Exception as exc:  # provider and transport failures must cross as data
+        except httpx.RequestError as exc:
+            return _unknown(f"notification outcome unknown: {type(exc).__name__}: {exc}")
+        except Exception as exc:  # configuration/program failures must cross as data
             return _failed(f"notification provider error: {type(exc).__name__}: {exc}")
 
     async def _send_email(self, message: OutboundMessage) -> DeliveryResult:
@@ -105,9 +107,9 @@ def _result(response: httpx.Response, *, id_field: str) -> DeliveryResult:
     try:
         provider_id = response.json().get(id_field)
     except (ValueError, AttributeError):
-        return _failed("provider returned malformed JSON")
+        return _unknown("provider returned malformed success response")
     if not isinstance(provider_id, str) or not provider_id:
-        return _failed(f"provider response missing {id_field}")
+        return _unknown(f"provider success response missing {id_field}")
     return DeliveryResult(
         status=DeliveryStatus.SENT,
         provider_message_id=provider_id,
@@ -117,6 +119,10 @@ def _result(response: httpx.Response, *, id_field: str) -> DeliveryResult:
 
 def _failed(error: str) -> DeliveryResult:
     return DeliveryResult(status=DeliveryStatus.FAILED, error=error)
+
+
+def _unknown(error: str) -> DeliveryResult:
+    return DeliveryResult(status=DeliveryStatus.UNKNOWN, error=error)
 
 
 def _whatsapp_address(address: str) -> str:

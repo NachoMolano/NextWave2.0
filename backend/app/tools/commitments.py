@@ -90,6 +90,20 @@ class CommitmentCoordinator:
         """
         commitment = self._require(await self._store.commitment(commitment_id))
 
+        # The event insert is the atomic outbox claim. Only the caller that inserts it may
+        # contact the provider; a replay or concurrent worker sees False and sends nothing.
+        claimed = await self._store.append_event(
+            EventRow(
+                order_id=commitment.order_id,
+                call_id=commitment.evidence_call_id,
+                type="commitment.recap_claimed",
+                payload={"commitment_id": commitment_id, "channel": str(message.channel)},
+                idempotency_key=f"commitment-recap-claimed:{commitment_id}",
+            )
+        )
+        if not claimed:
+            return self._require(await self._store.commitment(commitment_id))
+
         await self._store.update_commitment(
             commitment.model_copy(update={"state": CommitmentState.RECAP_SENT})
         )
@@ -107,8 +121,13 @@ class CommitmentCoordinator:
                     reason=ApprovalReason.POLICY_FAILURE,
                     context={
                         "commitment_id": commitment_id,
-                        "detail": "the written recap did not leave; the commitment is not "
-                        "promoted and will not be re-sent automatically",
+                        "detail": (
+                            "the written recap outcome is unresolved; the commitment is not "
+                            "promoted and will not be re-sent automatically"
+                            if result.status is DeliveryStatus.UNKNOWN
+                            else "the written recap did not leave; the commitment is not "
+                            "promoted and will not be re-sent automatically"
+                        ),
                         "error": result.error or "unknown",
                     },
                     raised_at=self._now(),
@@ -117,9 +136,17 @@ class CommitmentCoordinator:
             await self._store.append_event(
                 EventRow(
                     order_id=commitment.order_id,
-                    type="commitment.recap_failed",
-                    payload={"commitment_id": commitment_id, "error": result.error or "unknown"},
-                    idempotency_key=f"commitment-recap-failed:{commitment_id}",
+                    type=(
+                        "commitment.recap_unknown"
+                        if result.status is DeliveryStatus.UNKNOWN
+                        else "commitment.recap_failed"
+                    ),
+                    payload={
+                        "commitment_id": commitment_id,
+                        "status": str(result.status),
+                        "error": result.error or "unknown",
+                    },
+                    idempotency_key=f"commitment-recap-{result.status}:{commitment_id}",
                 )
             )
             return commitment.model_copy(update={"state": CommitmentState.RECAP_SENT})
