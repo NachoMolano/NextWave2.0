@@ -27,7 +27,7 @@ STATUS: built. OWNER: Track B.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
 from typing import Any
@@ -43,6 +43,7 @@ from app.domain import (
     CallDirection,
     CallPhase,
     CallRecord,
+    CallReport,
     CallStatus,
     CompanyProfile,
     ReportModel,
@@ -183,6 +184,7 @@ def create_webhook_router(
     escalation_number: str,
     server_secret: str,
     now: Callable[[], datetime],
+    after_report: Callable[[CallRecord, CallReport], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """The event endpoint, with every dependency chosen by the composition root.
 
@@ -356,7 +358,20 @@ def create_webhook_router(
             log.exception("vapi.end_of_call.report_failed", call_id=call_id)
             return {"received": True, "reported": False}
 
-        return {"received": True, "reported": True}
+        if after_report is not None and stored is not None:
+            try:
+                await after_report(stored, report)
+            except Exception:
+                # The evidence is already durable.  A delivery workflow failure must not
+                # make Vapi retry and overwrite it; the workflow records its own failed
+                # delivery or escalation and remains fail-closed.
+                log.exception("vapi.end_of_call.after_report_failed", call_id=call_id)
+                return {"received": True, "reported": True, "notified": False}
+
+        result: dict[str, object] = {"received": True, "reported": True}
+        if after_report is not None:
+            result["notified"] = True
+        return result
 
     # ------------------------------------------------------------------ escalation
 

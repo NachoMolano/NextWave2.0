@@ -513,6 +513,18 @@ class Market:
         if approved_version != order.mandate_version:
             raise ValueError("the approval was made under a stale mandate version")
 
+        existing = await self._store.quote(quote_id)
+        if (
+            order.awarded_quote_id == quote_id
+            and existing is not None
+            and existing.status is QuoteStatus.ACCEPTED
+        ):
+            # The provider may have placed zero calls after this exact approval accepted the
+            # quote.  Retrying that same open approval must re-attempt the confirmation call,
+            # not collide with the award it already made.  A different quote still reaches
+            # the database's one-award lock below.
+            return quote_id
+
         current = await self.rank(order)
         if current.winner_quote_id != quote_id:
             raise ValueError("the approved quote is no longer the current eligible winner")
@@ -558,3 +570,71 @@ class Market:
             )
         )
         return quote_id
+
+    async def plan_award(self, order: Order, quote_id: str) -> list[DialPlan]:
+        """Create the one confirmation call for the accepted winning quote.
+
+        Acceptance is deterministic and happens in :meth:`award`; this method only turns
+        that trusted result into a frozen AWARD context.  The event claim prevents a
+        repeated portal request or process retry from ringing the winning carrier twice.
+        """
+        quote = await self._store.quote(quote_id)
+        if (
+            quote is None
+            or quote.order_id != order.id
+            or quote.status is not QuoteStatus.ACCEPTED
+        ):
+            raise ValueError("the award call requires the accepted quote")
+        carrier = await self._store.carrier(quote.carrier_id)
+        if carrier is None or not carrier.phone:
+            raise ValueError("the awarded carrier has no callable phone number")
+
+        try:
+            calls = await cast(CallListingStore, self._store).calls_for(order.id)
+        except (AttributeError, NotImplementedError):
+            calls = []
+        attempt = sum(
+            1
+            for call in calls
+            if call.phase == CallPhase.AWARD.value
+            and call.ended_reason == DIAL_ROUND_PLACED_NOTHING
+        )
+        claimed = await self._store.append_event(
+            EventRow(
+                order_id=order.id,
+                type="award.call_planned",
+                payload={"quote_id": quote_id, "carrier_id": carrier.id},
+                idempotency_key=f"award-call-planned:{order.id}:{quote_id}:{attempt}",
+            )
+        )
+        if not claimed:
+            return []
+
+        terms = (
+            f"Selected quote {quote.id}: {quote.amount.spoken()} complete all-in, "
+            f"pickup {quote.pickup_at.isoformat()}, equipment {quote.equipment}, "
+            f"valid until {quote.valid_until.isoformat()}."
+        )
+        context = self._context_for(order, carrier, 1, quote.amount.amount).model_copy(
+            update={"phase": CallPhase.AWARD, "agreed_terms": terms}
+        )
+        call_id = await self._store.upsert_call(
+            CallRecord(
+                vapi_call_id=f"pending:award:{order.id}:{carrier.id}:{attempt}",
+                direction=CallDirection.OUTBOUND,
+                phase=CallPhase.AWARD.value,
+                order_id=order.id,
+                carrier_id=carrier.id,
+                to_number=carrier.phone,
+                started_at=self._now(),
+                context=context.model_dump(mode="json"),
+            )
+        )
+        return [
+            DialPlan(
+                call_id=call_id,
+                carrier=carrier,
+                to_number=carrier.phone,
+                context=context.model_dump(mode="json"),
+            )
+        ]

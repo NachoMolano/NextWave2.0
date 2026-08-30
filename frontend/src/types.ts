@@ -422,3 +422,16 @@ export interface Session {
   /** How many carriers an RFQ dials. Server settings, so the authorize button can name it. */
   rfq_carrier_count: number
 }
+
+export interface EmailTestRequest {
+  to_address: string
+  subject: string
+  body: string
+}
+
+export interface DeliveryResult {
+  status: 'pending' | 'sent' | 'failed' | 'unknown'
+  provider_message_id: string | null
+  error: string | null
+  sent_at: string | null
+}

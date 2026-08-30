@@ -350,3 +350,11 @@ class Session(BaseModel):
     rfq_carrier_count: int = Field(
         ge=1, description="Carriers dialled when the market opens, from server settings."
     )
+
+
+class EmailTestRequest(BaseModel):
+    """One local-only, user-authored Resend smoke test."""
+
+    to_address: str = Field(min_length=3, max_length=320)
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=20_000)
