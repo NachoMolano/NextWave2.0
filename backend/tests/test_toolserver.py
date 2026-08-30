@@ -42,6 +42,12 @@ class ScriptedTools(ModelTools):
     A subclass rather than a stand-in object so the router is exercised against the real
     class: if Track A renames a handler, these tests fail rather than silently testing a
     shape that no longer exists.
+
+    ``ModelTools.__init__`` is deliberately not called. Every handler is overridden here, so
+    none of the collaborators it assembles is ever reached -- and Track A owns that
+    constructor, which has already grown a ``ledger`` and a ``commitments`` argument since
+    Phase 0. Binding to the handler *names* is the coupling worth having; binding to the
+    constructor as well would make this file red every time they add a dependency.
     """
 
     def __init__(
@@ -51,7 +57,8 @@ class ScriptedTools(ModelTools):
         answer: str = "Recorded. Nothing is booked.",
         explode: BaseException | None = None,
     ) -> None:
-        super().__init__(store, now=lambda: NOW)
+        self._store = store
+        self._now = lambda: NOW
         self._answer = answer
         self._explode = explode
         self.seen: list[tuple[str, str, Any]] = []
@@ -162,16 +169,18 @@ async def test_a_raising_handler_still_returns_200_with_an_error_string() -> Non
 
 
 async def test_an_unbuilt_handler_holds_instead_of_pretending() -> None:
-    """Track A's stubs raise NotImplementedError today. That must reach the agent as a hold.
+    """A stub that has not landed yet must reach the agent as a hold, not as silence.
 
-    This is the state the repo is actually in during a parallel build, so it is worth an
-    assertion rather than an assumption.
+    During a parallel build this is the repo's normal state, and ``NotImplementedError`` is
+    the one exception a wrapper is most likely to be written to let through -- it reads like
+    a developer's problem rather than a runtime one. It is not: on a live call it is a tool
+    that did nothing while the model believed it worked.
     """
     store = InMemoryStore()
     await _seed_call(store)
-    real_tools = ModelTools(store, now=lambda: NOW)
+    tools = ScriptedTools(store, explode=NotImplementedError("Track A: implement this"))
 
-    code, body = await _post(real_tools, store, _envelope(_propose_quote_call()))
+    code, body = await _post(tools, store, _envelope(_propose_quote_call()))
 
     assert code == 200
     (result,) = body["results"]

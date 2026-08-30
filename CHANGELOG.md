@@ -48,6 +48,24 @@ app.include_router(
 )
 ```
 
+**PR #4 landed a `_mount()` helper that calls these factories with no arguments and catches
+only `NotImplementedError`.** They now raise `TypeError`, which it does not catch, so
+`create_app()` dies at import and the server does not boot at all — verified on a trial merge
+of `feat/b-telephony` + `feat/AE_tracks`:
+
+```
+TypeError: create_webhook_router() missing 8 required keyword-only arguments: 'store',
+'ledger', 'reporter', 'profile', 'build_assistant_for', 'escalation_number',
+'server_secret', and 'now'
+```
+
+Nothing catches this today because no test calls `create_app()`. Use the snippet above
+instead of `_mount` for the two `/vapi` routers; `_mount` still earns its place for Track C's
+`create_api_router`. The same trial merge is otherwise clean — one conflict, in this file,
+resolved by the keep-both rule — and green at **245 passed, 1 xfailed** once
+`tests/test_toolserver.py` stopped calling `ModelTools.__init__` (Track A grew it a `ledger`
+and a `commitments` argument; the double now overrides every handler and never calls it).
+
 `run_campaign(plans, placer, settings, *, profile, sleep=asyncio.sleep)` — `profile` is new
 and required. The assistant is composed per plan, because each `DialPlan.context` carries the
 market state as of dial time; one assistant reused across the fan-out would tell every carrier
