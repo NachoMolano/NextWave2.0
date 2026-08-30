@@ -114,6 +114,9 @@ class World:
                 status=CallStatus.ACTIVE,
                 order_id=order_id,
                 carrier_id=carrier_id,
+                identity_level=(
+                    1 if direction is CallDirection.INBOUND and carrier_id is not None else 0
+                ),
                 started_at=NOW - timedelta(seconds=30) if started else None,
             )
         )
@@ -132,6 +135,13 @@ def quote_args(amount: str = "8500", **overrides: object) -> ProposeQuoteArgs:
 
 async def decisions_for(world: World) -> list[tuple[str, str]]:
     return [(d.outcome, d.reason_code) for d in world.store.decisions.values()]
+
+
+async def accept_for_award(world: World, quote_id: str) -> None:
+    await world.store.accept_quote("order-1", quote_id)
+    current = await world.store.order("order-1")
+    assert current is not None
+    await world.store.save_order(current.model_copy(update={"awarded_quote_id": quote_id}))
 
 
 # ---------------------------------------------------------------------------------- row 1
@@ -303,6 +313,7 @@ async def test_confirm_outside_award_phase_is_refused() -> None:
     rfq_call = await world.call("vapi-1", phase="rfq")
     await world.tools.propose_quote(rfq_call, quote_args("8500"))
     quote_id = next(iter(world.store.quotes))
+    await accept_for_award(world, quote_id)
 
     result = await world.tools.confirm_preagreement(
         rfq_call,
@@ -329,6 +340,7 @@ async def test_failed_recap_leaves_commitment_unpromoted() -> None:
     award_call = await world.call("vapi-award", phase="award")
     await world.tools.propose_quote(award_call, quote_args("8500"))
     quote_id = next(iter(world.store.quotes))
+    await accept_for_award(world, quote_id)
     await world.tools.confirm_preagreement(
         award_call,
         ConfirmPreagreementArgs(quote_id=quote_id, carrier_confirmed_exact_recap=True),
@@ -341,8 +353,15 @@ async def test_failed_recap_leaves_commitment_unpromoted() -> None:
             channel=NotificationChannel.EMAIL, to_address="ops@example.com", body="recap"
         ),
     )
+    replay = await world.commitments.send_recap_and_promote(
+        commitment_id,
+        OutboundMessage(
+            channel=NotificationChannel.EMAIL, to_address="ops@example.com", body="recap"
+        ),
+    )
 
     assert result.state is CommitmentState.RECAP_SENT
+    assert replay.state is CommitmentState.RECAP_SENT
     assert result.state is not CommitmentState.COMMITTED
     stored = await world.store.commitment(commitment_id)
     assert stored is not None and stored.state is CommitmentState.RECAP_SENT
@@ -358,6 +377,7 @@ async def test_a_delivered_recap_is_what_promotes_a_commitment() -> None:
     award_call = await world.call("vapi-award", phase="award")
     await world.tools.propose_quote(award_call, quote_args("8500"))
     quote_id = next(iter(world.store.quotes))
+    await accept_for_award(world, quote_id)
     await world.tools.confirm_preagreement(
         award_call,
         ConfirmPreagreementArgs(quote_id=quote_id, carrier_confirmed_exact_recap=True),
@@ -391,6 +411,7 @@ async def test_missing_anchor_is_not_committed() -> None:
     award_call = await world.call("vapi-award", phase="award", started=False)
     await world.tools.propose_quote(award_call, quote_args("8500"))
     quote_id = next(iter(world.store.quotes))
+    await accept_for_award(world, quote_id)
 
     result = await world.tools.confirm_preagreement(
         award_call,
@@ -410,6 +431,7 @@ async def test_a_yes_without_an_exact_recap_is_not_evidence() -> None:
     award_call = await world.call("vapi-award", phase="award")
     await world.tools.propose_quote(award_call, quote_args("8500"))
     quote_id = next(iter(world.store.quotes))
+    await accept_for_award(world, quote_id)
 
     result = await world.tools.confirm_preagreement(
         award_call,
@@ -480,19 +502,15 @@ async def test_internal_failure_writes_no_commitment() -> None:
 # --------------------------------------------------------------------------------- row 14
 
 
-async def test_single_commitment_under_race() -> None:
-    """Row 14. Two carriers confirm during awarding. Two open bookings is the worst outcome.
-
-    The refusal comes from the store, not from a check in the handler: two concurrent
-    confirmations could both pass an application-level "is the slot free" test on their way
-    to writing. In Postgres this is the partial unique index; InMemoryStore models it.
-    """
+async def test_only_the_accepted_winner_can_confirm() -> None:
+    """Row 14. A losing carrier cannot turn an AWARD-phase call into a commitment."""
     world = World()
     first_call = await world.call("vapi-a", phase="award", carrier_id="carrier-1")
     second_call = await world.call("vapi-b", phase="award", carrier_id="carrier-2")
     await world.tools.propose_quote(first_call, quote_args("8500"))
     await world.tools.propose_quote(second_call, quote_args("8700"))
     quotes = {q.carrier_id: q.id for q in await world.store.quotes_for("order-1")}
+    await accept_for_award(world, str(quotes["carrier-1"]))
 
     first = await world.tools.confirm_preagreement(
         first_call,
@@ -511,9 +529,6 @@ async def test_single_commitment_under_race() -> None:
     assert second == RESPONSES["preagreement_refused"]
     live = [c for c in world.store.commitments.values() if c.state is CommitmentState.VERBAL]
     assert len(live) == 1
-    assert (PolicyOutcome.DENY.value, ReasonCode.CONFLICTING_STATE.value) in await decisions_for(
-        world
-    )
 
 
 # --------------------------------------------------------------------------------- row 15

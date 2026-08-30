@@ -306,13 +306,21 @@ class Market:
         return approval.model_copy(update={"id": approval_id})
 
     async def award(self, order: Order, approval: Approval) -> str:
-        """Accept the winning quote. Raises AwardConflict if the slot is already taken."""
+        """Revalidate and accept the approved winner against current trusted state."""
         if approval.status is not ApprovalStatus.APPROVED:
             raise ValueError("an award requires an approved approval; nothing else authorizes one")
 
         quote_id = str(approval.context.get("winner_quote_id") or "")
         if not quote_id:
             raise ValueError("the approval carries no winning quote")
+
+        approved_version = approval.context.get("mandate_version")
+        if approved_version != order.mandate_version:
+            raise ValueError("the approval was made under a stale mandate version")
+
+        current = await self.rank(order)
+        if current.winner_quote_id != quote_id:
+            raise ValueError("the approved quote is no longer the current eligible winner")
 
         try:
             await self._store.accept_quote(order.id, quote_id)

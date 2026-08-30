@@ -250,6 +250,7 @@ def create_webhook_router(
                 phase=CallPhase.INBOUND.value,
                 status=CallStatus.RINGING,
                 carrier_id=carrier_id,
+                identity_level=1 if carrier_id else 0,
                 from_number=from_number,
                 started_at=now(),
                 context=context.model_dump(mode="json"),

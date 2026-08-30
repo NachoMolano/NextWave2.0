@@ -70,8 +70,8 @@ class NewOrderRequest(BaseModel):
 class SetMandateRequest(BaseModel):
     """Step 4. The only shape in the system that can raise a price ceiling.
 
-    ``set_by`` is required and has no default. An authorization with nobody's name on it is
-    not an authorization, and this is the row a jury reads when it asks who allowed the spend.
+    ``expected_version`` makes a stale dashboard write fail instead of silently replacing a
+    newer mandate. The audit actor comes from authenticated server configuration.
     """
 
     cap_amount_cents: int = Field(gt=0)
@@ -81,14 +81,13 @@ class SetMandateRequest(BaseModel):
     pickup_not_after: datetime
     delivery_deadline: datetime | None = None
     commitment_mode: CommitmentMode = CommitmentMode.HUMAN_ESCALATION
-    set_by: str = Field(min_length=1)
+    expected_version: int = Field(ge=0)
 
 
 class ApprovalDecisionRequest(BaseModel):
     """Steps 9 and 10. ``approved`` on an award is what releases the award call."""
 
     status: str = Field(pattern="^(approved|rejected|handled|expired)$")
-    decided_by: str = Field(min_length=1)
     note: str | None = None
 
 

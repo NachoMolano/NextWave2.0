@@ -96,6 +96,11 @@ def build_tools(
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    production_errors = settings.production_errors()
+    if production_errors:
+        raise RuntimeError(
+            "production configuration is incomplete: " + ", ".join(production_errors)
+        )
     store = build_store(settings)
     placer = build_placer(settings)
     notifier = build_notifier(settings)
@@ -115,13 +120,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         call_placer: CallPlacer,
         call_settings: Settings,
     ) -> dict[str, str]:
+        """Dial, then bind each planned row to the call that was actually placed.
+
+        The write-back lives here rather than in ``run_campaign`` because ``vapi/`` may not
+        import ``store/``. Without it the planned row keeps its ``pending:`` placeholder, the
+        webhook opens a second row under the real id carrying no order and no context, and
+        every tool call in the conversation correlates to that empty one.
+        """
         placed = await run_campaign(plans, call_placer, call_settings, profile=profile)
-        # Re-key each planned row to the id the provider assigned. Without this the row keeps
-        # its "pending:" placeholder, the first webhook fails to find it, and a second row is
-        # inserted with no order attached -- after which every tool call on that call is
-        # correctly refused for want of an operation.
-        for our_id, provider_id in placed.items():
-            await ledger.attach_provider_id(our_id, provider_id)
+        for call_id, vapi_call_id in placed.items():
+            try:
+                await store.attach_vapi_call_id(call_id, vapi_call_id)
+            except Exception:
+                # The call is already ringing; failing here would strand it entirely. Log
+                # loudly -- this row is now the split-evidence case until someone repairs it.
+                log.exception("call.correlation_failed", call_id=call_id, vapi_call_id=vapi_call_id)
         return placed
 
     async def dial_plans(plans: list[DialPlan]) -> object:

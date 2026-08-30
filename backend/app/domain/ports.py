@@ -108,6 +108,18 @@ class Store(Protocol):
         """
         ...
 
+    async def attach_vapi_call_id(self, call_id: str, vapi_call_id: str) -> None:
+        """Bind a planned call row to the Vapi call that was actually placed.
+
+        A campaign writes the row -- order, carrier, negotiation context -- before it dials,
+        because the context is what makes the call replayable. The Vapi id does not exist
+        until the dial returns, so the row is created with a ``pending:`` placeholder and
+        corrected here. Without this the webhook creates a *second* row under the real id
+        with no order and no context, every tool call correlates to that one, and the
+        evidence for a single call is split across two rows that never meet.
+        """
+        ...
+
     async def add_quote(self, quote: QuoteRow) -> str: ...
 
     async def supersede_quote(self, old_quote_id: str, new_quote_id: str) -> None:
