@@ -16,6 +16,44 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T02:57-0500 · ports, store, api, main, vapi · nacho
+
+The RFQ fan-out places calls. Three carriers, one order, three phones ringing.
+
+`Store` gains **`attach_vapi_call_id(call_id, vapi_call_id)`**. A campaign writes the call row
+— order, carrier, frozen negotiation context — before it dials, because the context is what
+makes a call replayable, but the Vapi id does not exist until the dial returns. The row was
+created with a `pending:` placeholder and nothing ever corrected it, so the webhook opened a
+*second* row under the real id carrying no order and no context. Every tool call in the
+conversation correlated to that empty one. On a live call the evidence for a single
+conversation sat in two rows that never met. Implemented in `store/supabase.py` (update by row
+id — `upsert_call` keys on `vapi_call_id` and would insert rather than correct) and in
+`tests/fakes.py`; the shared store suite covers it against both.
+
+`POST /api/orders/{id}/rfq` now dials. `market.plan_rfq` returns `list[DialPlan]` and
+`start_rfq` discarded it: plans and call rows were written, the order flipped to QUOTING, and
+no phone rang. `create_api_router` takes a `RfqDialler` — a callable, not the campaign, because
+`api` may not import `vapi` — and `main.py` closes over the placer and does the write-back.
+
+`run_campaign` spaces its dials by `_LAUNCH_SPACING_SECONDS`. Three creates in the same
+millisecond left one call ringing with no assistant on it; the same three two seconds apart
+connected. The spacing sits before the semaphore, so a plan waiting its turn does not hold a
+concurrency slot.
+
+Not fixed, and worth someone's morning: **the mandate currency is dropped**.
+`CallContext.price_ceiling` is a bare `Decimal`, so every builder does `order.cap.amount` and
+throws `order.cap.currency` away; `prompts.py` then reattaches `COMPANY_CURRENCY`. A cap of
+11,000 MXN reaches the agent as `Ceiling: 11,000 USD`. Policy is unaffected — it totals per
+currency against real `Money` — so this is the agent's conversational judgement being
+calibrated in the wrong unit, not an authorization hole. `Money` exists to make this
+impossible and the prompt context is the one place that discards it.
+
+→ Affects: **Everyone** — `ports.py` grew a method, so any `Store` implementation must add it.
+**Track C** — `create_api_router` takes `dial`. **Track D** — `agent/context.py`'s
+`context_from_order` and `company_profile_from_settings` are exported but imported by nothing;
+the live path uses `market._context_for` and `assistant.profile_from_settings`, and the two
+disagree on date format. One of them is what the next person will read and believe.
+
 ## 2026-08-30T02:16-0500 · vapi/assistant · nacho
 
 CP4: the first real outbound call connected. Two things had to change to get there.

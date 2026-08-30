@@ -267,3 +267,40 @@ async def test_an_unconfigured_production_placer_refuses_before_the_request() ->
         await VapiCallPlacer(Settings(vapi_api_key="", vapi_phone_number_id="")).place(
             {}, "+520000000000"
         )
+
+
+# ------------------------------------------------------------------------ launch spacing
+
+
+async def test_the_dials_are_spaced_rather_than_fired_in_one_instant() -> None:
+    """Every call in a campaign leaves from one number, and providers rate-limit per number.
+
+    Three creates inside the same millisecond raced transport allocation on a live run: one
+    carrier never rang (``call.start.error-get-transport``, no provider id) and one rang with
+    no assistant on it. Only the first dial starts immediately; the rest wait their turn.
+    """
+    waits: list[float] = []
+
+    async def record(seconds: float) -> None:
+        waits.append(seconds)
+
+    placer = FakeCallPlacer()
+
+    await run_campaign(
+        [_plan(1), _plan(2), _plan(3)], placer, SETTINGS, profile=PROFILE, sleep=record
+    )
+
+    assert len(placer.dialled) == 3
+    assert waits == [2.0, 4.0], "the first dials at once; the others are spaced behind it"
+
+
+async def test_a_single_carrier_waits_for_nothing() -> None:
+    """A one-carrier campaign has nothing to race, so it must not pay the spacing."""
+    waits: list[float] = []
+
+    async def record(seconds: float) -> None:
+        waits.append(seconds)
+
+    await run_campaign([_plan(1)], FakeCallPlacer(), SETTINGS, profile=PROFILE, sleep=record)
+
+    assert waits == []
