@@ -264,6 +264,13 @@ class InMemoryStore:
         self.orders[order_id] = order.model_copy(update={"id": order_id})
         return order_id
 
+    async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool:
+        existing = self.orders.get(str(order.id))
+        if existing is None or existing.mandate_version != expected_version:
+            return False
+        self.orders[str(order.id)] = order
+        return True
+
     async def record_delivery(self, message: OutboundMessage, result: DeliveryResult) -> str:
         self.deliveries.append((message, result))
         return f"notification-{len(self.deliveries)}"

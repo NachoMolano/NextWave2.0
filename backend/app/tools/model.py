@@ -464,7 +464,13 @@ class ModelTools:
             return RESPONSES["no_order"]
 
         quote = await self._store.quote(args.quote_id)
-        if quote is None or quote.order_id != order.id:
+        if (
+            quote is None
+            or quote.order_id != order.id
+            or quote.status is not QuoteStatus.ACCEPTED
+            or order.awarded_quote_id != quote.id
+            or call.carrier_id != quote.carrier_id
+        ):
             return RESPONSES["preagreement_refused"]
 
         key = _digest("confirm_preagreement", call_id, args)
@@ -640,7 +646,7 @@ class ModelTools:
         expected = self._expected_fact(order, args.fact_kind) if order else None
         matched = expected is not None and _normalize(expected) == _normalize(args.fact_value)
 
-        await self._store.append_event(
+        first_attempt = await self._store.append_event(
             EventRow(
                 order_id=order.id if order else None,
                 call_id=call_id,
@@ -659,14 +665,22 @@ class ModelTools:
             # is told the plate can repeat the plate, which verifies nothing.
             return RESPONSES["identity_no_match"]
 
-        level = min(call.identity_level + 1, 3)
+        if not first_attempt:
+            return RESPONSES["identity_match"]
+
+        # A reference correlates the order but does not authenticate the caller. Level 1
+        # comes only from trusted directory phone matching; one independent operational
+        # fact then reaches level 2. Level 3 is reserved for a future stronger mechanism.
+        level = call.identity_level
+        if args.fact_kind != "reference" and call.carrier_id and level >= 1:
+            level = 2
         await self._store.upsert_call(
             call.model_copy(
                 update={
                     "order_id": call.order_id or (order.id if order else None),
                     "identity_level": level,
-                    # Two independent facts. Identity may only ever demand more, so this
-                    # flips up and nothing in a conversation flips it back down.
+                    # Identity may only ever demand more, so this flips up and nothing in
+                    # a conversation flips it back down.
                     "identity_verified": call.identity_verified or level >= 2,
                 }
             )

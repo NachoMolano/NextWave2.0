@@ -10,6 +10,13 @@ from app.config import Settings
 from app.main import create_app
 
 
+def test_production_refuses_to_start_without_security_gates() -> None:
+    import pytest
+
+    with pytest.raises(RuntimeError, match="PORTAL_API_TOKEN"):
+        create_app(Settings(environment="production"))
+
+
 def test_create_app_mounts_every_integrated_surface() -> None:
     app = create_app(Settings(supabase_url="", supabase_secret_key=""))
 

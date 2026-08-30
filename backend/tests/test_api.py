@@ -35,6 +35,7 @@ from app.store import StoreUnavailable
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+AUTH = {"Authorization": "Bearer portal-test-token"}
 
 
 def _now() -> datetime:
@@ -153,11 +154,14 @@ def build(
             sweep=sweep,
             dial=dial,
             now=_now,
-            settings=Settings(),
+            settings=Settings(
+                portal_api_token="portal-test-token",
+                portal_manager_identity="ops@volta.test",
+            ),
         ),
         prefix="/api",
     )
-    return TestClient(app), store, market, sweep, dial
+    return TestClient(app, headers=AUTH), store, market, sweep, dial
 
 
 def _new_order(reference: str = "OP-MZO-0001") -> dict[str, object]:
@@ -180,7 +184,7 @@ def _mandate() -> dict[str, object]:
         "target_amount_cents": 820_000,
         "pickup_not_before": NOW.isoformat(),
         "pickup_not_after": (NOW + timedelta(days=2)).isoformat(),
-        "set_by": "ops@volta.test",
+        "expected_version": 0,
     }
 
 
@@ -272,7 +276,7 @@ def test_raising_the_cap_versions_it_rather_than_overwriting() -> None:
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
-    raised = dict(_mandate(), cap_amount_cents=1_200_000, set_by="boss@volta.test")
+    raised = dict(_mandate(), cap_amount_cents=1_200_000, expected_version=1)
     body = client.post(f"/api/orders/{order_id}/mandate", json=raised).json()
 
     assert body["mandate"]["version"] == 2
@@ -282,14 +286,13 @@ def test_raising_the_cap_versions_it_rather_than_overwriting() -> None:
     assert f"mandate.set:{order_id}:v2" in keys
 
 
-def test_a_mandate_without_a_name_on_it_is_rejected() -> None:
-    """An authorization nobody signed is not an authorization."""
+def test_a_stale_mandate_write_is_rejected() -> None:
+    """Two dashboards cannot silently overwrite one another's authority."""
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
-    unsigned = {k: v for k, v in _mandate().items() if k != "set_by"}
-
-    assert client.post(f"/api/orders/{order_id}/mandate", json=unsigned).status_code == 422
+    assert client.post(f"/api/orders/{order_id}/mandate", json=_mandate()).status_code == 409
 
 
 # ---------------------------------------------------------------------------- the market
@@ -400,7 +403,7 @@ def test_approving_an_award_releases_the_award_call() -> None:
 
     response = client.post(
         f"/api/approvals/{approval_id}/decision",
-        json={"status": "approved", "decided_by": "ops@volta.test"},
+        json={"status": "approved"},
     )
 
     assert response.status_code == 200
@@ -416,7 +419,7 @@ def test_a_second_award_is_a_409_not_a_500() -> None:
 
     response = client.post(
         f"/api/approvals/{approval_id}/decision",
-        json={"status": "approved", "decided_by": "ops@volta.test"},
+        json={"status": "approved"},
     )
 
     assert response.status_code == 409
@@ -426,7 +429,7 @@ def test_an_approval_is_decided_once() -> None:
     client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
     approval_id = _award_approval(store, order_id)
-    decision = {"status": "approved", "decided_by": "ops@volta.test"}
+    decision = {"status": "approved"}
     client.post(f"/api/approvals/{approval_id}/decision", json=decision)
 
     again = client.post(f"/api/approvals/{approval_id}/decision", json=decision)
@@ -442,7 +445,7 @@ def test_the_inbox_lists_only_what_is_open() -> None:
 
     client.post(
         f"/api/approvals/{approval_id}/decision",
-        json={"status": "approved", "decided_by": "ops@volta.test"},
+        json={"status": "approved"},
     )
 
     assert client.get("/api/approvals").json() == []
@@ -499,15 +502,18 @@ def test_the_sweep_dials_once_and_then_nothing() -> None:
 # --------------------------------------------------------------- not built, and honest
 
 
-def test_renegotiation_answers_501_and_names_the_owner() -> None:
-    """No TODO comment: it is not built, it says so, and it says whose it is."""
+def test_unimplemented_renegotiation_is_not_advertised() -> None:
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     response = client.post(f"/api/orders/{order_id}/renegotiate")
 
-    assert response.status_code == 501
-    assert "Track E" in response.json()["detail"]
+    assert response.status_code == 404
+
+
+def test_portal_requires_a_bearer_token() -> None:
+    client, _, _, _, _ = build()
+    assert client.get("/api/orders", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
 def test_an_unconfigured_store_is_503_not_a_crash() -> None:

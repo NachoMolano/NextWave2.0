@@ -205,6 +205,11 @@ def build_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
         "timeoutSeconds": settings.vapi_tool_timeout_seconds,
     }
 
+    enabled_models = {
+        name: model
+        for name, model in TOOL_ARGUMENT_MODELS.items()
+        if settings.recording_enabled or name != "confirm_preagreement"
+    }
     tools: list[dict[str, Any]] = [
         {
             "type": "function",
@@ -215,7 +220,7 @@ def build_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
             },
             "server": dict(server),
         }
-        for name, model in TOOL_ARGUMENT_MODELS.items()
+        for name, model in enabled_models.items()
     ]
 
     # No destinations: an empty transferCall is what makes Vapi send
@@ -290,9 +295,14 @@ def build_assistant(
 
     language = profile.primary_language.lower().split("-")[0]
 
+    greeting = build_greeting(profile, context)
+    if settings.recording_enabled:
+        notice = _require(settings.recording_consent_notice, key="RECORDING_CONSENT_NOTICE")
+        greeting = f"{notice.strip()} {greeting}"
+
     return {
         "name": f"{profile.agent_name} · {context.phase.value}",
-        "firstMessage": build_greeting(profile, context),
+        "firstMessage": greeting,
         "model": {
             "provider": model_provider,
             "model": model_id,
@@ -311,7 +321,8 @@ def build_assistant(
         # tool-level URL above, so the endpoint a stranger's speech can reach is not the
         # endpoint that composes assistants.
         "server": {"url": f"{base_url}/vapi/events", "secret": secret},
-        # Without a recording there is no anchor, and without an anchor there is no
-        # commitment -- evidence_anchor_ms is NOT NULL for exactly this reason.
-        "artifactPlan": {"recordingEnabled": True, "transcriptPlan": {"enabled": True}},
+        "artifactPlan": {
+            "recordingEnabled": settings.recording_enabled,
+            "transcriptPlan": {"enabled": True},
+        },
     }

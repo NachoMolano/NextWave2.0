@@ -29,9 +29,10 @@ function still stubbed by its owner answer 501 and name the owner. OWNER: Track 
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Protocol
+from hmac import compare_digest
+from typing import Annotated, Protocol
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.api.schemas import (
     ApprovalDecisionRequest,
@@ -47,6 +48,7 @@ from app.api.schemas import (
 from app.config import Settings
 from app.domain import (
     Approval,
+    ApprovalStatus,
     CallRecord,
     Carrier,
     DialPlan,
@@ -77,6 +79,8 @@ class PortalStore(Store, Protocol):
 
     async def calls_for(self, order_id: str) -> list[CallRecord]: ...
 
+    async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool: ...
+
 
 #: A sweep the router can trigger without importing jobs. Returns the call ids placed.
 Sweep = Callable[[], Awaitable[list[str]]]
@@ -103,6 +107,8 @@ def _guard() -> Iterator[None]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except StoreUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except NotImplementedError as exc:
         # A track has not landed its half yet. 501 names it instead of a 500 that reads like
         # a crash; the portal can show the button as not-yet-wired rather than broken.
@@ -118,7 +124,17 @@ def create_api_router(
     now: Callable[[], datetime],
     settings: Settings,
 ) -> APIRouter:
-    router = APIRouter(tags=["portal"])
+    async def authenticate(authorization: Annotated[str | None, Header()] = None) -> str:
+        token = settings.portal_api_token.strip()
+        actor = settings.portal_manager_identity.strip()
+        if not token or not actor:
+            raise HTTPException(status_code=503, detail="portal authentication is not configured")
+        scheme, separator, credential = (authorization or "").partition(" ")
+        if not separator or scheme.lower() != "bearer" or not compare_digest(credential, token):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return actor
+
+    router = APIRouter(tags=["portal"], dependencies=[Depends(authenticate)])
 
     async def _load(order_id: str) -> Order:
         with _guard():
@@ -183,7 +199,9 @@ def create_api_router(
         )
 
     @router.post("/orders/{order_id}/mandate", response_model=OrderAggregate)
-    async def set_mandate(order_id: str, body: SetMandateRequest) -> OrderAggregate:
+    async def set_mandate(
+        order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(authenticate)]
+    ) -> OrderAggregate:
         """The only price-cap writer in the system.
 
         Bumps the version rather than overwriting in place. Decisions copy the ceiling by
@@ -191,6 +209,12 @@ def create_api_router(
         was made under the old one.
         """
         order = await _load(order_id)
+        if order.mandate_version != body.expected_version:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"stale mandate version {body.expected_version}; "
+                        f"current version is {order.mandate_version}"),
+            )
         updated = order.model_copy(
             update={
                 "cap": Money(cents=body.cap_amount_cents, currency=body.cap_currency),
@@ -204,13 +228,15 @@ def create_api_router(
                 "delivery_deadline": body.delivery_deadline or order.delivery_deadline,
                 "commitment_mode": body.commitment_mode,
                 "mandate_version": order.mandate_version + 1,
-                "mandate_set_by": body.set_by,
+                "mandate_set_by": actor,
                 "mandate_set_at": now(),
                 "status": OrderStatus.QUOTING,
             }
         )
         with _guard():
-            await store.save_order(updated)
+            saved = await store.save_order_if_mandate_version(updated, body.expected_version)
+            if not saved:
+                raise HTTPException(status_code=409, detail="mandate changed concurrently; reload")
             await store.append_event(
                 EventRow(
                     order_id=order_id,
@@ -219,7 +245,7 @@ def create_api_router(
                         "version": updated.mandate_version,
                         "cap_cents": body.cap_amount_cents,
                         "cap_currency": body.cap_currency,
-                        "set_by": body.set_by,
+                        "set_by": actor,
                     },
                     idempotency_key=f"mandate.set:{order_id}:v{updated.mandate_version}",
                 )
@@ -251,19 +277,6 @@ def create_api_router(
         with _guard():
             return await market.rank(order)
 
-    @router.post("/orders/{order_id}/renegotiate", response_model=OrderAggregate)
-    async def renegotiate(order_id: str) -> OrderAggregate:
-        """Move something already agreed. Same path as the RFQ, at phase=renegotiation.
-
-        There is no entry point for this in tools/ yet -- see CHANGELOG, where it is raised
-        with Track E. It answers 501 rather than pretending, and its test is skipped.
-        """
-        await _load(order_id)
-        raise HTTPException(
-            status_code=501,
-            detail="Track E: tools/market.py has no renegotiate entry point yet",
-        )
-
     # --------------------------------------------------------------------- approvals
 
     @router.get("/approvals", response_model=list[Approval])
@@ -276,7 +289,11 @@ def create_api_router(
             return await store.open_approvals(order_id)
 
     @router.post("/approvals/{approval_id}/decision", response_model=Approval)
-    async def decide_approval(approval_id: str, body: ApprovalDecisionRequest) -> Approval:
+    async def decide_approval(
+        approval_id: str,
+        body: ApprovalDecisionRequest,
+        actor: Annotated[str, Depends(authenticate)],
+    ) -> Approval:
         """Steps 9 and 10. Approving an award is what engages the single-award lock."""
         with _guard():
             approval = await store.approval(approval_id)
@@ -288,16 +305,25 @@ def create_api_router(
             )
 
         with _guard():
-            await store.resolve_approval(
-                approval_id,
-                status=body.status,
-                decided_by=body.decided_by,
-                note=body.note,
-            )
             if body.status == "approved" and approval.order_id:
                 order = await store.order(approval.order_id)
                 if order is not None and str(approval.kind) == "award_approval":
-                    await market.award(order, approval)
+                    await market.award(
+                        order,
+                        approval.model_copy(
+                            update={
+                                "status": ApprovalStatus.APPROVED,
+                                "decided_by": actor,
+                                "note": body.note,
+                            }
+                        ),
+                    )
+            await store.resolve_approval(
+                approval_id,
+                status=body.status,
+                decided_by=actor,
+                note=body.note,
+            )
             decided = await store.approval(approval_id)
         if decided is None:
             raise HTTPException(status_code=500, detail="approval vanished after being decided")

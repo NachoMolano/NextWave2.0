@@ -26,6 +26,15 @@ import type {
 // same-origin request and no CORS policy needs to exist. Set VITE_API_BASE_URL only when the
 // portal is deployed somewhere the API is not.
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
+const tokenKey = 'volta_portal_token'
+
+export function setPortalToken(token: string): void {
+  sessionStorage.setItem(tokenKey, token)
+}
+
+export function hasPortalToken(): boolean {
+  return Boolean(sessionStorage.getItem(tokenKey))
+}
 
 export class ApiError extends Error {
   readonly status: number
@@ -38,8 +47,13 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = sessionStorage.getItem(tokenKey)
   const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
     ...init,
   })
 

@@ -784,6 +784,20 @@ class SupabaseStore:
             raise StoreError("upsert into orders returned no row")
         return str(row["id"])
 
+    async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool:
+        """Atomically replace an order only while its mandate version is still current."""
+        if not order.id:
+            return False
+        with _translate():
+            res = (
+                await self._db.table("orders")
+                .update(_order_row(order))
+                .eq("id", order.id)
+                .eq("mandate_version", expected_version)
+                .execute()
+            )
+        return bool(_rows(res))
+
     async def record_delivery(self, message: OutboundMessage, result: DeliveryResult) -> str:
         row: dict[str, Any] = {
             "order_id": message.order_id,

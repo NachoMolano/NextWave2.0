@@ -96,6 +96,11 @@ def build_tools(
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    production_errors = settings.production_errors()
+    if production_errors:
+        raise RuntimeError(
+            "production configuration is incomplete: " + ", ".join(production_errors)
+        )
     store = build_store(settings)
     placer = build_placer(settings)
     notifier = build_notifier(settings)

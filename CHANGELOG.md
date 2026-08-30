@@ -78,6 +78,25 @@ RFQ fan-out — the centre of the brief — has no trigger.
 **Track E** — `sim_tools --url` and `replay_webhook --url` send no `x-vapi-secret`, so both
 get 401 against a correctly configured server and the live HTTP rung cannot be exercised.
 
+## 2026-08-30T02:23-0500 · security kernel · codex
+
+Implemented the locally enforceable controls from the Volta security-kernel and drayage
+procurement specifications: authenticated portal authority with server-derived actors,
+optimistic mandate writes, award/pre-agreement revalidation, one-shot recap claims, explicit
+ambiguous-delivery state, opt-in recording with a required notice, concrete inbound identity
+levels, production readiness gates, and the missing IANA timezone dependency. The unimplemented
+renegotiation route is no longer advertised. The frontend now supplies the demo bearer token from
+tab-scoped storage and uses versioned human-action payloads.
+
+`DeliveryStatus.UNKNOWN` is additive to the shared domain vocabulary. Migration 0003 extends the
+notifications status constraint accordingly; it must be applied before deploying this branch.
+
+→ Affects: **Everyone** — `/api` now requires `PORTAL_API_TOKEN` and
+`PORTAL_MANAGER_IDENTITY`; mandate requests require `expected_version`; approval requests no
+longer accept `decided_by`; recording defaults off; production startup requires the four named
+readiness gates. **Track C/data** — apply migration 0003. **Frontend** — users enter the manager
+token once per browser tab.
+
 ## 2026-08-30T01:52-0500 · frontend · nacho/track-c
 
 The portal, brought over from the old repo's control tower and rewired to `/api`. `dashboard/`

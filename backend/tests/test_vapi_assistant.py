@@ -43,6 +43,8 @@ def _settings(**overrides: Any) -> Settings:
         "vapi_server_secret": "shared-secret-for-tests",
         "public_base_url": "https://volta.example.ngrok.app",
         "vapi_tool_timeout_seconds": 20,
+        "recording_enabled": True,
+        "recording_consent_notice": "This call is recorded for operational evidence.",
     }
     base.update(overrides)
     return Settings(**base)
@@ -99,6 +101,24 @@ def test_the_recording_is_on_because_evidence_depends_on_it() -> None:
     assert isinstance(plan, dict)
     assert plan["recordingEnabled"] is True
     assert plan["transcriptPlan"]["enabled"] is True
+
+
+def test_recording_is_opt_in_and_disables_preagreement_without_evidence() -> None:
+    settings = _settings(recording_enabled=False, recording_consent_notice="")
+    assistant = build_assistant(PROFILE, _context(), settings)
+
+    assert assistant["artifactPlan"]["recordingEnabled"] is False
+    names = {
+        tool["function"]["name"]
+        for tool in assistant["model"]["tools"]
+        if tool["type"] == "function"
+    }
+    assert "confirm_preagreement" not in names
+
+
+def test_recording_notice_is_spoken_before_the_greeting() -> None:
+    assistant = build_assistant(PROFILE, _context(), _settings())
+    assert str(assistant["firstMessage"]).startswith("This call is recorded")
 
 
 def test_the_tool_url_and_the_event_url_are_different_endpoints() -> None:
