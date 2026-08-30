@@ -27,8 +27,11 @@ from app.domain import (
     CallDirection,
     CallRecord,
     Carrier,
+    Commitment,
     Comparison,
+    DecisionRow,
     DialPlan,
+    EventRow,
     Order,
 )
 from app.store import StoreUnavailable
@@ -59,6 +62,15 @@ class PortalMemoryStore(InMemoryStore):
 
     async def calls_for(self, order_id: str) -> list[CallRecord]:
         return [c for c in self.calls.values() if c.order_id == order_id]
+
+    async def decisions_for_call(self, call_id: str) -> list[DecisionRow]:
+        return [d for d in self.decisions.values() if d.call_id == call_id]
+
+    async def events_for_call(self, call_id: str) -> list[EventRow]:
+        return [e for e in self.events.values() if e.call_id == call_id]
+
+    async def commitments_for(self, order_id: str) -> list[Commitment]:
+        return [c for c in self.commitments.values() if c.order_id == order_id]
 
 
 class FakeMarket:
@@ -526,3 +538,99 @@ def test_an_unconfigured_store_is_503_not_a_crash() -> None:
     client, _, _, _, _ = build(Unconfigured())
 
     assert client.get("/api/orders").status_code == 503
+
+
+# ---------------------------------------------------------------- the decision trace
+
+
+def _traced_call(store: PortalMemoryStore, order_id: str) -> str:
+    call_id = _rfq_call(store, order_id, "carrier-1")
+    asyncio.run(
+        store.record_decision(
+            DecisionRow(
+                order_id=order_id,
+                call_id=call_id,
+                proposal={"amount_cents": 1_050_000},
+                outcome="deny",
+                reason_code="outside_mandate",
+                cap_at_decision_cents=900_000,
+                cap_currency="USD",
+                mandate_version=1,
+                decided_at=NOW + timedelta(seconds=35),
+            )
+        )
+    )
+    asyncio.run(
+        store.append_event(
+            EventRow(
+                order_id=order_id,
+                call_id=call_id,
+                type="quote.proposed",
+                idempotency_key=f"quote:{call_id}",
+                created_at=NOW + timedelta(seconds=34),
+            )
+        )
+    )
+    return call_id
+
+
+def test_the_trace_shows_a_refusal_with_the_cap_it_was_judged_against() -> None:
+    """The row a jury reads. The cap is the one copied into the decision, not today's."""
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    store.add_carrier(Carrier(id="carrier-1", name="Fletes del Pacifico", phone="+523141000001"))
+    call_id = _traced_call(store, order_id)
+
+    rows = client.get(f"/api/calls/{call_id}/trace").json()
+
+    policy = [r for r in rows if r["category"] == "policy"]
+    assert len(policy) == 1
+    assert policy[0]["result"] == "denied"
+    assert policy[0]["reason_code"] == "OUTSIDE_MANDATE"
+    assert "9,000.00 USD" in policy[0]["volta"]
+
+
+def test_the_trace_is_ordered_and_stays_short() -> None:
+    """One short sentence per side. A column of paragraphs is a log console, not a trace."""
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    store.add_carrier(Carrier(id="carrier-1", name="Fletes del Pacifico", phone="+523141000001"))
+    call_id = _traced_call(store, order_id)
+
+    rows = client.get(f"/api/calls/{call_id}/trace").json()
+
+    assert rows == sorted(rows, key=lambda r: r["at"])
+    assert all(len(r["counterparty"]) <= 80 for r in rows)
+    assert all(len(r["volta"]) <= 80 for r in rows)
+    assert {r["category"] for r in rows} <= {
+        "conversation",
+        "quote",
+        "policy",
+        "decision",
+        "tool",
+        "action",
+    }
+
+
+def test_the_trace_never_carries_a_prompt() -> None:
+    """The transcript is provenance for the trace, never its content.
+
+    The prompt states the ceiling and the target under a heading telling the agent never to
+    say them. It reached the portal once through calls.transcript; it must not reach it again
+    through a screen built on top of that transcript.
+    """
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    store.add_carrier(Carrier(id="carrier-1", name="Fletes del Pacifico", phone="+523141000001"))
+    call_id = _traced_call(store, order_id)
+
+    body = client.get(f"/api/calls/{call_id}/trace").text
+
+    assert "NEVER SAY OUT LOUD" not in body
+    assert "ROLE" not in body
+    assert "Ceiling" not in body
+
+
+def test_an_unknown_call_has_no_trace() -> None:
+    client, _, _, _, _ = build()
+    assert client.get("/api/calls/nope/trace").status_code == 404
