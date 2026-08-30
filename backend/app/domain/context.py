@@ -13,12 +13,13 @@ this — deliberately, so that adding a field to the mandate does not silently c
 agent says.
 """
 
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["CallContext", "CallPhase"]
+__all__ = ["CallContext", "CallPhase", "spoken_window"]
 
 
 class CallPhase(StrEnum):
@@ -90,3 +91,24 @@ class CallContext(BaseModel):
     expected_driver: str | None = None
     expected_plate: str | None = None
     expected_carrier: str | None = None
+
+
+def spoken_window(not_before: datetime | None, not_after: datetime | None) -> str | None:
+    """The mandate's pickup window as a person says it, or None when there is not one.
+
+    Here rather than in ``agent/`` because ``tools/`` builds the context and may not import
+    ``agent/``, and both paths have to produce the same sentence: ``agent/prompts.py``
+    recognises exactly this grammar when it shortens the window into a one-breath answer.
+
+    An ISO timestamp is not a spoken date. "2026-09-02T08:00:00+00:00" read out loud is
+    what a dispatcher hangs up on, and a window nobody can say is a window the agent ends
+    up asking the carrier to supply -- which inverts who is buying.
+    """
+    if not_before is None or not_after is None:
+        return None
+    if not_before.date() == not_after.date():
+        return f"on {not_before:%B} {not_before.day}, {not_before:%Y}"
+    return (
+        f"between {not_before:%B} {not_before.day} and "
+        f"{not_after:%B} {not_after.day}, {not_after:%Y}"
+    )

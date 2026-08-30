@@ -9,7 +9,7 @@ beyond validation and projection.
 """
 
 from app.domain.company import BusinessType, CompanyProfile
-from app.domain.context import CallContext, CallPhase
+from app.domain.context import CallContext, CallPhase, spoken_window
 from app.domain.models import (
     COMMITMENT_DEAD_STATES,
     DELIVERY_UNDERWAY,
@@ -107,4 +107,5 @@ __all__ = [
     "Severity",
     "Store",
     "Turn",
+    "spoken_window",
 ]
