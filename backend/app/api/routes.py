@@ -34,6 +34,7 @@ from typing import Annotated, Protocol
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
+from app.api.nextaction import next_action
 from app.api.schemas import (
     ApprovalDecisionRequest,
     BusinessProfile,
@@ -180,7 +181,10 @@ def create_api_router(
             order = await store.order(order_id)
         if order is None:
             raise HTTPException(status_code=500, detail="order vanished after being written")
-        return OrderSummary.of(order, now().date(), 0)
+        today = now().date()
+        return OrderSummary.of(
+            order, today, 0, next_action(order, open_approvals=0, quotes_in_hand=0, today=today)
+        )
 
     @router.get("/orders", response_model=list[OrderSummary])
     async def list_orders() -> list[OrderSummary]:
@@ -192,7 +196,30 @@ def create_api_router(
         for approval in open_now:
             if approval.order_id:
                 counts[approval.order_id] = counts.get(approval.order_id, 0) + 1
-        return [OrderSummary.of(o, today, counts.get(str(o.id), 0)) for o in orders]
+        rows = [
+            OrderSummary.of(
+                order,
+                today,
+                counts.get(str(order.id), 0),
+                next_action(
+                    order,
+                    open_approvals=counts.get(str(order.id), 0),
+                    quotes_in_hand=0,
+                    today=today,
+                ),
+            )
+            for order in orders
+        ]
+        # Sorted by whose move it is, then by how much clock is left. A queue ordered by
+        # created_at makes an operator read every row to find the one that is blocked on them.
+        rank = {"now": 0, "soon": 1, "waiting": 2, "none": 3}
+        return sorted(
+            rows,
+            key=lambda r: (
+                rank[r.next_action.urgency],
+                r.demurrage.days_remaining if r.demurrage.days_remaining is not None else 9999,
+            ),
+        )
 
     @router.get("/orders/{order_id}", response_model=OrderAggregate)
     async def get_order(order_id: str) -> OrderAggregate:
@@ -203,10 +230,18 @@ def create_api_router(
             calls = await store.calls_for(order_id)
             commitment = await store.live_commitment(order_id)
             approvals = await store.open_approvals(order_id)
+        today = now().date()
+        live_quotes = [q for q in quotes if str(q.status) in ("proposed", "selected", "accepted")]
         return OrderAggregate(
             order=order,
             mandate=MandateView.of(order),
-            demurrage=DemurrageView.of(order, now().date()),
+            demurrage=DemurrageView.of(order, today),
+            next_action=next_action(
+                order,
+                open_approvals=len(approvals),
+                quotes_in_hand=len(live_quotes),
+                today=today,
+            ),
             quotes=quotes,
             calls=calls,
             commitment=commitment,

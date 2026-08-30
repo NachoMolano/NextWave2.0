@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.nextaction import NextAction
 from app.domain import (
     Approval,
     CallRecord,
@@ -38,6 +39,7 @@ __all__ = [
     "DemurrageView",
     "MandateView",
     "NewOrderRequest",
+    "NextAction",
     "OrderAggregate",
     "OrderSummary",
     "SetMandateRequest",
@@ -167,9 +169,12 @@ class OrderSummary(BaseModel):
     demurrage: DemurrageView
     mandate: MandateView
     open_approvals: int
+    next_action: NextAction
 
     @classmethod
-    def of(cls, order: Order, today: date, open_approvals: int) -> "OrderSummary":
+    def of(
+        cls, order: Order, today: date, open_approvals: int, action: NextAction
+    ) -> "OrderSummary":
         return cls(
             id=str(order.id),
             reference=order.reference,
@@ -180,6 +185,7 @@ class OrderSummary(BaseModel):
             demurrage=DemurrageView.of(order, today),
             mandate=MandateView.of(order),
             open_approvals=open_approvals,
+            next_action=action,
         )
 
 
@@ -195,6 +201,7 @@ class OrderAggregate(BaseModel):
     order: Order
     mandate: MandateView
     demurrage: DemurrageView
+    next_action: NextAction
     quotes: list[QuoteRow]
     calls: list[CallRecord]
     commitment: Commitment | None

@@ -345,3 +345,67 @@ h3 { font-size: 20px; }
 .profile-save .field { max-width: 320px; }
 .profile-save .dialog-actions { justify-content: flex-start; margin-top: 14px; }
 .profile-save .primary-button { width: auto; }
+
+/* The model's report. Deliberately a different surface from the Decision Trace: the trace is
+   the ledger, this is one model's reading of a recording, and a reader should never have to
+   guess which they are looking at. */
+.report { display: grid; gap: 16px; }
+.report-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.report-heading .eyebrow { margin: 0; }
+.report-badges { display: flex; gap: 7px; }
+.report-summary { margin: 0; font-size: 15px; line-height: 1.5; }
+
+/* Candidates get the room and the caveat, because they are the part most likely to be
+   mistaken for a booking. */
+.report-candidates { padding: 18px; border: 1px solid color-mix(in srgb, var(--orange) 40%, transparent); border-radius: 12px; background: #fff8f1; }
+.report-candidates > .eyebrow { margin-bottom: 6px; color: #a2560e; }
+.report-caveat { margin: 0 0 14px; color: color-mix(in srgb, var(--navy) 70%, transparent); font-size: 12px; line-height: 1.5; }
+.candidate { padding: 13px 0; border-top: 1px solid color-mix(in srgb, var(--orange) 28%, transparent); }
+.candidate:first-of-type { border-top: 0; padding-top: 0; }
+.candidate-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.candidate-head strong { font-size: 13px; font-weight: 600; }
+.candidate .brief-list { margin: 0; color: var(--navy); }
+
+.report-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+.report-block .eyebrow { margin-bottom: 9px; color: var(--blue); }
+.anchored-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.anchored-list li { display: grid; grid-template-columns: 46px 1fr; gap: 10px; color: var(--ink-muted); font-size: 13px; line-height: 1.4; }
+.anchored-time { color: var(--blue); font-family: 'Martian Mono', monospace; font-size: 10px; }
+.report-provenance { margin: 0; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-muted); font-family: 'Martian Mono', monospace; font-size: 10px; line-height: 1.5; }
+
+/* Where are we, and whose move. The two questions a person opens the portal with. */
+.stage-strip { display: flex; gap: 0; margin: 0 0 20px; padding: 0; list-style: none; }
+.stage { display: grid; flex: 1; gap: 7px; justify-items: center; position: relative; color: var(--ink-muted); font-size: 11px; text-align: center; }
+.stage::before { content: ''; position: absolute; top: 6px; left: -50%; width: 100%; height: 1px; background: var(--sand-deep); }
+.stage:first-child::before { display: none; }
+.stage-dot { z-index: 1; width: 13px; height: 13px; border: 1px solid var(--sand-deep); border-radius: 50%; background: var(--sand); }
+.stage-done { color: color-mix(in srgb, var(--navy) 70%, transparent); }
+.stage-done .stage-dot { border-color: #347b5a; background: #347b5a; }
+.stage-done::before { background: #347b5a; }
+.stage-current { color: var(--blue); font-weight: 600; }
+.stage-current .stage-dot { border-color: var(--blue); background: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 16%, transparent); }
+
+.actor { display: inline-flex; width: fit-content; padding: 3px 8px; border-radius: 99px; font-family: 'Martian Mono', monospace; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.actor-you { color: #8a3d06; background: #ffe9d3; }
+.actor-volta { color: #16706a; background: #dcf3f0; }
+.actor-nobody { color: var(--ink-muted); background: color-mix(in srgb, var(--sand-deep) 45%, transparent); }
+
+.next-action { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 26px; padding: 20px 22px; border: 1px solid var(--line); border-left: 3px solid var(--sand-deep); border-radius: 12px; background: var(--panel); }
+.next-action-copy { display: grid; gap: 5px; }
+.next-action-head { display: flex; align-items: center; gap: 10px; }
+.next-action-stage { color: var(--ink-muted); font-family: 'Martian Mono', monospace; font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+.next-action-copy strong { font-size: 17px; font-weight: 500; }
+.next-action-copy > span:last-child { color: var(--ink-muted); font-size: 13px; }
+.next-action-button { width: auto; white-space: nowrap; }
+/* Only a person blocking the work gets a warm border. Machine work is not urgent however
+   busy it looks, and colouring it as though it were teaches people to ignore the colour. */
+.next-action-now { border-left-color: var(--orange); background: #fffaf5; }
+.next-action-soon { border-left-color: #d8a33c; }
+.next-action-waiting { border-left-color: #16706a; }
+.next-action-none { border-left-color: var(--sand-deep); }
+
+.operation-action { font-size: 15px; font-weight: 500; }
+.operation-row.operation-now { border-left: 3px solid var(--orange); }
+.operation-row.operation-soon { border-left: 3px solid #d8a33c; }
+.operation-row.operation-waiting { border-left: 3px solid #16706a; }
+.operation-row.operation-none { border-left: 3px solid transparent; }

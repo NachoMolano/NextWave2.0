@@ -34,6 +34,7 @@ from app.domain import (
     DialPlan,
     EventRow,
     Order,
+    OrderStatus,
 )
 from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore
@@ -276,6 +277,7 @@ def test_the_aggregate_is_one_call() -> None:
         "order",
         "mandate",
         "demurrage",
+        "next_action",
         "quotes",
         "calls",
         "commitment",
@@ -720,3 +722,69 @@ def test_a_store_without_the_migration_says_so() -> None:
     client, _, _, _, _ = build(NoProfile())
 
     assert client.get("/api/profile").status_code == 503
+
+
+# --------------------------------------------------------------- where are we, and whose move
+
+
+def test_a_new_order_is_waiting_on_a_person() -> None:
+    """The question a portal has to answer: is this waiting on me, or is it working?"""
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "operator"
+    assert action["label"] == "Grant a mandate"
+    assert action["stage"] == "Mandate"
+
+
+def test_an_open_market_is_working_not_waiting() -> None:
+    """Carriers being dialled is the machine doing its job. It must not read as urgent."""
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+    client.post(f"/api/orders/{order_id}/rfq")
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "volta"
+    assert action["urgency"] == "waiting"
+
+
+def test_an_open_approval_outranks_everything_else() -> None:
+    """A decision waiting on a person is the only state where the system has stopped."""
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _award_approval(store, order_id)
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "operator"
+    assert action["urgency"] == "now"
+
+
+def test_the_queue_puts_what_is_blocked_on_a_person_first() -> None:
+    """A queue ordered by created_at makes someone read every row to find their own."""
+    client, store, _, _, _ = build()
+    quiet = client.post("/api/orders", json=_new_order("OP-QUIET")).json()["id"]
+    client.post(f"/api/orders/{quiet}/mandate", json=_mandate())
+    client.post(f"/api/orders/{quiet}/rfq")
+    blocked = client.post("/api/orders", json=_new_order("OP-BLOCKED")).json()["id"]
+    _award_approval(store, blocked)
+
+    rows = client.get("/api/orders").json()
+
+    assert rows[0]["reference"] == "OP-BLOCKED"
+    assert rows[0]["next_action"]["urgency"] == "now"
+
+
+def test_a_finished_order_asks_nothing_of_anyone() -> None:
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    asyncio.run(store.set_order_status(order_id, OrderStatus.DELIVERED))
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "nobody"
+    assert action["urgency"] == "none"

@@ -13,6 +13,16 @@ services:
     plan: starter
     healthCheckPath: /health
     envVars:
+      # --- the human portal ---
+      # Every /api route requires `Authorization: Bearer <PORTAL_API_TOKEN>`. Without both of
+      # these the whole portal answers 503 -- deliberately, since /api carries the only
+      # endpoint that can write a price cap and failing open there would be the wrong default.
+      # PORTAL_MANAGER_IDENTITY is the name a decision is recorded against.
+      - key: PORTAL_API_TOKEN
+        generateValue: true
+      - key: PORTAL_MANAGER_IDENTITY
+        sync: false
+
       # --- persistence ---
       - key: SUPABASE_URL
         sync: false

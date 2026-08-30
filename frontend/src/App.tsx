@@ -12,6 +12,9 @@ import type {
   MandateView,
   Money,
   OrderAggregate,
+  AnchoredNote,
+  CallReport,
+  NextAction,
   OrderSummary,
   QuoteRow,
   TraceCategory,
@@ -241,6 +244,69 @@ function ErrorState({ message, onRetry }: { message: string; onRetry?: () => voi
   )
 }
 
+
+/* ------------------------------------------------------- where are we, and whose move */
+
+/**
+ * The stage strip. "Where are we" answered by position rather than by reading a status word
+ * and knowing what it implies -- `quoting` and `awaiting_approval` are both "in progress" to
+ * the schema and opposite things to a person.
+ */
+function StageStrip({ action }: { action: NextAction }) {
+  const stages = ['Received', 'Mandate', 'Market', 'Comparison', 'Award', 'In transit']
+  return (
+    <ol className="stage-strip">
+      {stages.map((stage, index) => (
+        <li
+          key={stage}
+          className={
+            index < action.stage_index
+              ? 'stage stage-done'
+              : index === action.stage_index
+                ? 'stage stage-current'
+                : 'stage'
+          }
+        >
+          <span className="stage-dot" />
+          <span className="stage-name">{stage}</span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/** Who is holding this, said in one word rather than inferred from a status. */
+function ActorBadge({ action }: { action: NextAction }) {
+  if (action.actor === 'nobody') return <span className="actor actor-nobody">Closed</span>
+  return (
+    <span className={action.actor === 'operator' ? 'actor actor-you' : 'actor actor-volta'}>
+      {action.actor === 'operator' ? 'Your move' : 'Volta is working'}
+    </span>
+  )
+}
+
+/** The one thing to do next. A button when it is ours, a status when it is not. */
+function NextActionPanel({ action, onAct }: { action: NextAction; onAct?: () => void }) {
+  const mine = action.actor === 'operator'
+  return (
+    <div className={`next-action next-action-${action.urgency}`}>
+      <div className="next-action-copy">
+        <div className="next-action-head">
+          <ActorBadge action={action} />
+          <span className="next-action-stage">{action.stage}</span>
+        </div>
+        <strong>{action.label}</strong>
+        <span>{action.detail}</span>
+      </div>
+      {mine && onAct && (
+        <button className="primary-button next-action-button" onClick={onAct}>
+          {action.label}
+        </button>
+      )}
+    </div>
+  )
+}
+
 /* -------------------------------------------------------------- the queue */
 
 function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
@@ -292,7 +358,11 @@ function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
         ) : (
           <div className="operation-list">
             {orders.map((order) => (
-              <button className="operation-row" key={order.id} onClick={() => onOpen(order.id)}>
+              <button
+                className={`operation-row operation-${order.next_action.urgency}`}
+                key={order.id}
+                onClick={() => onOpen(order.id)}
+              >
                 <div className="operation-route">
                   <span className="reference">{order.reference}</span>
                   <strong>
@@ -301,17 +371,9 @@ function OrdersPage({ onOpen }: { onOpen: (orderId: string) => void }) {
                   <span>{order.container_number ?? 'no container number'}</span>
                 </div>
                 <div className="operation-stage">
-                  <span className={statusClass(order.status)}>{humanise(order.status)}</span>
-                  <span>
-                    {order.mandate.is_granted
-                      ? `Ceiling ${formatMoney(order.mandate.cap)} · v${order.mandate.version}`
-                      : 'No mandate — nothing is authorized'}
-                  </span>
-                  {order.open_approvals > 0 && (
-                    <span className="reference">
-                      {order.open_approvals} waiting on a person
-                    </span>
-                  )}
+                  <ActorBadge action={order.next_action} />
+                  <strong className="operation-action">{order.next_action.label}</strong>
+                  <span>{order.next_action.detail}</span>
                 </div>
                 <div
                   className={
@@ -432,6 +494,9 @@ function OrderDetail({
           <small>Last free day {formatDay(demurrage.last_free_day)}</small>
         </div>
       </div>
+
+      <StageStrip action={data.next_action} />
+      <NextActionPanel action={data.next_action} />
 
       <div className="detail-grid">
         <div className="detail-main">
@@ -881,6 +946,141 @@ function CallRow({ call, onOpen }: { call: CallRecord; onOpen: () => void }) {
 }
 
 
+
+/* -------------------------------------------------------------- the model's report */
+
+/** A note the model made, with the moment it heard it. */
+function AnchoredList({ items }: { items: AnchoredNote[] }) {
+  return (
+    <ul className="anchored-list">
+      {items.map((item, index) => (
+        <li key={index}>
+          <span className="anchored-time">{formatOffset(item.offset_ms ?? null)}</span>
+          <span>{item.text ?? '—'}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function ReportBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="report-block">
+      <p className="eyebrow">{title}</p>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * Everything the model produced about the call, and nothing more.
+ *
+ * The panel is visually separated from the Decision Trace on purpose. The trace is the
+ * ledger — rows we wrote when the thing happened. This is one model's reading of a
+ * recording, generated afterwards with no latency budget, and it is wrong sometimes. It is
+ * useful for the same reason a colleague's notes are useful, and it binds nothing.
+ *
+ * Agreement candidates get the most room and the loudest caveat, because they are the part
+ * a reader is most likely to mistake for a booking. A commitment exists in `commitments`,
+ * with an anchor the server measured, or it does not exist.
+ */
+function CallReportPanel({ report }: { report: CallReport }) {
+  const has = (list: unknown[] | undefined) => Array.isArray(list) && list.length > 0
+
+  return (
+    <div className="report">
+      <div className="report-heading">
+        <p className="eyebrow">What a model understood</p>
+        <div className="report-badges">
+          <span className={statusClass(report.subject)}>{humanise(report.subject)}</span>
+          <span className={statusClass(report.severity)}>{report.severity}</span>
+        </div>
+      </div>
+
+      <p className="report-summary">{report.summary}</p>
+
+      {has(report.agreement_candidates) && (
+        <div className="report-candidates">
+          <p className="eyebrow">Agreement candidates — proposals, not bookings</p>
+          <p className="report-caveat">
+            Terms the model believes it heard. Nothing here is agreed: policy decides whether
+            anything binds, and a commitment exists only with an offset the server measured.
+          </p>
+          {report.agreement_candidates.map((candidate, index) => (
+            <article className="candidate" key={index}>
+              <div className="candidate-head">
+                <span className="anchored-time">{formatOffset(candidate.offset_ms ?? null)}</span>
+                {candidate.counterparty && <strong>{candidate.counterparty}</strong>}
+              </div>
+              <ul className="brief-list">
+                {(candidate.terms ?? []).map((term) => (
+                  <li key={term}>{term}</li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </div>
+      )}
+
+      <div className="report-grid">
+        {has(report.quoted_prices) && (
+          <ReportBlock title="Prices heard">
+            <ul className="anchored-list">
+              {report.quoted_prices.map((price, index) => (
+                <li key={index}>
+                  <span className="anchored-time">{formatOffset(price.offset_ms ?? null)}</span>
+                  <span>
+                    {price.amount ?? '—'} {price.currency ?? ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </ReportBlock>
+        )}
+
+        {has(report.actions) && (
+          <ReportBlock title="What Volta did">
+            <AnchoredList items={report.actions} />
+          </ReportBlock>
+        )}
+
+        {has(report.mentions) && (
+          <ReportBlock title="Mentioned">
+            <AnchoredList items={report.mentions} />
+          </ReportBlock>
+        )}
+
+        {has(report.conditions) && (
+          <ReportBlock title="Conditions">
+            <ul className="brief-list">
+              {report.conditions.map((condition) => (
+                <li key={condition}>{condition}</li>
+              ))}
+            </ul>
+          </ReportBlock>
+        )}
+
+        {has(report.objections) && (
+          <ReportBlock title="Objections">
+            <ul className="brief-list">
+              {report.objections.map((objection) => (
+                <li key={objection}>{objection}</li>
+              ))}
+            </ul>
+          </ReportBlock>
+        )}
+      </div>
+
+      {/* Which model, and when. Without it a reader cannot tell a fresh reading from one
+          produced by a model we have since replaced. */}
+      <p className="report-provenance">
+        {report.model ?? 'unknown model'} · generated {formatDate(report.generated_at)} ·
+        model output is never authority
+      </p>
+    </div>
+  )
+}
+
 /* --------------------------------------------------------------- decision trace */
 
 const TRACE_FILTERS: { key: 'all' | TraceCategory; label: string }[] = [
@@ -1075,16 +1275,7 @@ function CallEvidencePage({ callId, onBack }: { callId: string; onBack: () => vo
 
         {report && (
           <section>
-            <p className="eyebrow">What a model understood</p>
-            <p>{report.summary}</p>
-            {report.objections.length > 0 && (
-              <ul className="brief-list">
-                {report.objections.map((objection) => (
-                  <li key={objection}>{objection}</li>
-                ))}
-              </ul>
-            )}
-            <span className={statusClass(report.severity)}>{report.severity}</span>
+            <CallReportPanel report={report} />
           </section>
         )}
 
