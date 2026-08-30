@@ -87,6 +87,23 @@ export interface MandateView {
   is_granted: boolean
 }
 
+/** Whose move it is. `volta` means the machine is working and nobody need do anything. */
+export type Actor = 'operator' | 'volta' | 'nobody'
+
+/** `now` is reserved for things a person is blocking. Machine work is `waiting`. */
+export type Urgency = 'now' | 'soon' | 'waiting' | 'none'
+
+export interface NextAction {
+  stage: string
+  stage_index: number
+  stage_count: number
+  label: string
+  detail: string
+  actor: Actor
+  urgency: Urgency
+  href: string | null
+}
+
 export interface OrderSummary {
   id: string
   reference: string
@@ -97,6 +114,7 @@ export interface OrderSummary {
   demurrage: DemurrageView
   mandate: MandateView
   open_approvals: number
+  next_action: NextAction
 }
 
 export interface Order {
@@ -173,17 +191,47 @@ export interface CallRecord {
 }
 
 /** What a model understood. Evidence for a human, never an authorization. */
+/** Something the model noticed, anchored to the recording so it can be checked. */
+export interface AnchoredNote {
+  text?: string
+  offset_ms?: number | null
+}
+
+export interface QuotedPrice {
+  amount?: string
+  currency?: string
+  offset_ms?: number | null
+}
+
+/**
+ * An agreement the model believes it heard. **Not a commitment.** The model proposes;
+ * policy decides whether anything binds, and a commitment only exists in `commitments`
+ * with an audio offset the server measured. Rendering these as if they were agreed is the
+ * single most misleading thing this screen could do.
+ */
+export interface AgreementCandidate {
+  terms?: string[]
+  counterparty?: string
+  offset_ms?: number | null
+}
+
+/**
+ * What a model made of a finished call. Evidence for a human and an input to policy —
+ * never an authorization by itself. Fields are optional because this is model output
+ * validated at the boundary, and a screen that throws on a missing key is worse than one
+ * that shows what arrived.
+ */
 export interface CallReport {
   call_id: string
   summary: string
   subject: 'quote' | 'accident' | 'delay' | 'request' | 'delivered' | 'other'
   severity: 'low' | 'medium' | 'high'
-  actions: Record<string, unknown>[]
-  mentions: Record<string, unknown>[]
-  quoted_prices: Record<string, unknown>[]
+  actions: AnchoredNote[]
+  mentions: AnchoredNote[]
+  quoted_prices: QuotedPrice[]
   objections: string[]
   conditions: string[]
-  agreement_candidates: Record<string, unknown>[]
+  agreement_candidates: AgreementCandidate[]
   model: string | null
   generated_at: string | null
 }
@@ -231,6 +279,7 @@ export interface OrderAggregate {
   order: Order
   mandate: MandateView
   demurrage: DemurrageView
+  next_action: NextAction
   quotes: QuoteRow[]
   calls: CallRecord[]
   commitment: Commitment | null
@@ -361,7 +410,14 @@ export interface BusinessProfile {
   updated_by: string | null
 }
 
-/** Every field optional except the name of whoever is making the change. */
-export type BusinessProfileUpdate = Partial<Omit<BusinessProfile, 'updated_at' | 'updated_by'>> & {
-  updated_by: string
+/**
+ * Every field optional. `updated_by` is deliberately absent: the server takes it from the
+ * credential, because a name typed into a form authenticates nothing.
+ */
+export type BusinessProfileUpdate = Partial<Omit<BusinessProfile, 'updated_at' | 'updated_by'>>
+
+/** Who the portal thinks you are, and how specific that claim really is. */
+export interface Session {
+  actor: string
+  shared_token: boolean
 }

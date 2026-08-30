@@ -55,10 +55,41 @@ class Settings(BaseSettings):
     manager_whatsapp: str = ""
 
     # --- Human portal authority ---
-    #: Demo-safe authentication for every /api route. The token identifies exactly one
-    #: trusted manager; request bodies never get to choose their own audit actor.
+    #: Authentication for every /api route. Request bodies never get to choose their own
+    #: audit actor: the identity comes from the credential, because a name typed into a form
+    #: authenticates nothing.
+    #:
+    #: One token per person, as ``token:identity`` pairs separated by commas or newlines:
+    #:
+    #:     PORTAL_TOKENS=k7f...:maria@volta.mx,q2p...:diego@volta.mx
+    #:
+    #: This is the difference between an audit trail that means something and one that only
+    #: looks like it does. With a shared token, "maria@volta.mx approved this" really means
+    #: "somebody holding the shared token approved this" -- a human-looking address claiming
+    #: more accountability than the system can back. Per-person tokens make the same row true,
+    #: and let one person's access be revoked without rotating everyone's.
+    portal_tokens: str = ""
+
+    #: The single-token fallback. Still honoured so an existing deployment keeps working, but
+    #: PORTAL_TOKENS is the one to reach for.
     portal_api_token: str = ""
     portal_manager_identity: str = ""
+
+    #: Below this a token is a password, not a secret. Not enforced -- refusing to boot over a
+    #: policy judgement in the middle of a demo is the wrong trade -- but it is logged loudly
+    #: at startup, because a short token on a public URL is a real exposure and a silent one.
+    portal_minimum_token_length: int = 24
+
+    def portal_identities(self) -> dict[str, str]:
+        """token -> the identity it acts as. Empty when the portal is unconfigured."""
+        pairs: dict[str, str] = {}
+        for entry in self.portal_tokens.replace("\n", ",").split(","):
+            token, separator, identity = entry.strip().partition(":")
+            if separator and token.strip() and identity.strip():
+                pairs[token.strip()] = identity.strip()
+        if not pairs and self.portal_api_token.strip() and self.portal_manager_identity.strip():
+            pairs[self.portal_api_token.strip()] = self.portal_manager_identity.strip()
+        return pairs
 
     # --- Escalation ---
     #: Where a live call is transferred when the agent hands off to a person.

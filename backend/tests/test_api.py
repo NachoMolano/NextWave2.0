@@ -34,11 +34,20 @@ from app.domain import (
     DialPlan,
     EventRow,
     Order,
+    OrderStatus,
 )
 from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+#: The identity the configured token stands for. Every action is recorded against it.
+PORTAL_ACTOR = "ops@volta.test"
+
+#: Long enough not to trip the weak-token warning the app logs at startup.
+MARIA_TOKEN = "tok-maria-aaaaaaaaaaaaaaaaaa"
+DIEGO_TOKEN = "tok-diego-bbbbbbbbbbbbbbbbbb"
+SHARED_TOKEN = "tok-shared-cccccccccccccccccc"
 AUTH = {"Authorization": "Bearer portal-test-token"}
 
 
@@ -276,6 +285,7 @@ def test_the_aggregate_is_one_call() -> None:
         "order",
         "mandate",
         "demurrage",
+        "next_action",
         "quotes",
         "calls",
         "commitment",
@@ -680,34 +690,35 @@ def test_editing_the_profile_records_who_did_it() -> None:
 
     body = client.put(
         "/api/profile",
-        json={
-            "warehouse_address": "900 Channelside Dr",
-            "warehouse_city": "Tampa",
-            "updated_by": "diego@volta.test",
-        },
+        json={"warehouse_address": "900 Channelside Dr", "warehouse_city": "Tampa"},
     ).json()
 
     assert body["warehouse_address"] == "900 Channelside Dr"
-    assert body["updated_by"] == "diego@volta.test"
+    # From the credential, never from the body. A name typed into a form authenticates
+    # nothing, and this is the row somebody reads when they ask who changed the address the
+    # agent now reads out on a recorded line.
+    assert body["updated_by"] == PORTAL_ACTOR
     assert store.profile is not None
     assert store.profile["warehouse_address"] == "900 Channelside Dr"
 
 
-def test_an_edit_without_a_name_is_rejected() -> None:
+def test_a_body_cannot_claim_to_be_somebody_else() -> None:
+    """An `updated_by` in the body is ignored; the credential decides who acted."""
     client, _, _, _, _ = build()
 
-    response = client.put("/api/profile", json={"warehouse_city": "Orlando"})
+    body = client.put(
+        "/api/profile",
+        json={"warehouse_city": "Orlando", "updated_by": "somebody.else@example.com"},
+    ).json()
 
-    assert response.status_code == 422
+    assert body["updated_by"] == PORTAL_ACTOR
 
 
 def test_a_partial_edit_leaves_the_rest_alone() -> None:
     """A form edits what it edits. Absent fields are not an instruction to blank them."""
     client, _, _, _, _ = build()
 
-    body = client.put(
-        "/api/profile", json={"warehouse_hours": "07:00-19:00", "updated_by": "ops"}
-    ).json()
+    body = client.put("/api/profile", json={"warehouse_hours": "07:00-19:00"}).json()
 
     assert body["warehouse_hours"] == "07:00-19:00"
     assert body["display_name"] == "Pacific Textiles"
@@ -720,3 +731,147 @@ def test_a_store_without_the_migration_says_so() -> None:
     client, _, _, _, _ = build(NoProfile())
 
     assert client.get("/api/profile").status_code == 503
+
+
+# --------------------------------------------------------------- where are we, and whose move
+
+
+def test_a_new_order_is_waiting_on_a_person() -> None:
+    """The question a portal has to answer: is this waiting on me, or is it working?"""
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "operator"
+    assert action["label"] == "Grant a mandate"
+    assert action["stage"] == "Mandate"
+
+
+def test_an_open_market_is_working_not_waiting() -> None:
+    """Carriers being dialled is the machine doing its job. It must not read as urgent."""
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+    client.post(f"/api/orders/{order_id}/rfq")
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "volta"
+    assert action["urgency"] == "waiting"
+
+
+def test_an_open_approval_outranks_everything_else() -> None:
+    """A decision waiting on a person is the only state where the system has stopped."""
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _award_approval(store, order_id)
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "operator"
+    assert action["urgency"] == "now"
+
+
+def test_the_queue_puts_what_is_blocked_on_a_person_first() -> None:
+    """A queue ordered by created_at makes someone read every row to find their own."""
+    client, store, _, _, _ = build()
+    quiet = client.post("/api/orders", json=_new_order("OP-QUIET")).json()["id"]
+    client.post(f"/api/orders/{quiet}/mandate", json=_mandate())
+    client.post(f"/api/orders/{quiet}/rfq")
+    blocked = client.post("/api/orders", json=_new_order("OP-BLOCKED")).json()["id"]
+    _award_approval(store, blocked)
+
+    rows = client.get("/api/orders").json()
+
+    assert rows[0]["reference"] == "OP-BLOCKED"
+    assert rows[0]["next_action"]["urgency"] == "now"
+
+
+def test_a_finished_order_asks_nothing_of_anyone() -> None:
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    asyncio.run(store.set_order_status(order_id, OrderStatus.DELIVERED))
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["actor"] == "nobody"
+    assert action["urgency"] == "none"
+
+
+# ------------------------------------------------------------------ who is calling
+
+
+def _app_with(settings: Settings) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_api_router(
+            PortalMemoryStore(),  # type: ignore[arg-type]
+            market=FakeMarket(),  # type: ignore[arg-type]
+            sweep=FakeSweep(),
+            dial=FakeDialler(),
+            now=_now,
+            settings=settings,
+        ),
+        prefix="/api",
+    )
+    return TestClient(app)
+
+
+def test_per_person_tokens_each_act_as_themselves() -> None:
+    """The point of the whole exercise.
+
+    With one shared token, "maria approved this" means "somebody holding the shared token
+    approved this" -- a human-looking name claiming more accountability than the system can
+    back. One token per person makes the same row true.
+    """
+    client = _app_with(
+        Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx,{DIEGO_TOKEN}:diego@volta.mx")
+    )
+
+    maria = client.get("/api/session", headers={"Authorization": f"Bearer {MARIA_TOKEN}"})
+    diego = client.get("/api/session", headers={"Authorization": f"Bearer {DIEGO_TOKEN}"})
+
+    assert maria.json()["actor"] == "maria@volta.mx"
+    assert diego.json()["actor"] == "diego@volta.mx"
+    assert maria.json()["shared_token"] is False
+
+
+def test_the_single_token_still_works_and_says_it_is_shared() -> None:
+    """An existing deployment keeps working, and the portal admits what the name means."""
+    client = _app_with(
+        Settings(portal_api_token=SHARED_TOKEN, portal_manager_identity="ops@volta.mx")
+    )
+
+    body = client.get("/api/session", headers={"Authorization": f"Bearer {SHARED_TOKEN}"}).json()
+
+    assert body["actor"] == "ops@volta.mx"
+    assert body["shared_token"] is True
+
+
+def test_revoking_one_person_leaves_the_others_alone() -> None:
+    """The other half of per-person tokens: access can be taken away one at a time."""
+    both = Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx,{DIEGO_TOKEN}:diego@volta.mx")
+    revoked = Settings(portal_tokens=f"{MARIA_TOKEN}:maria@volta.mx")
+    diego = {"Authorization": f"Bearer {DIEGO_TOKEN}"}
+    maria = {"Authorization": f"Bearer {MARIA_TOKEN}"}
+
+    assert _app_with(both).get("/api/session", headers=diego).status_code == 200
+    assert _app_with(revoked).get("/api/session", headers=diego).status_code == 401
+    assert _app_with(revoked).get("/api/session", headers=maria).status_code == 200
+
+
+def test_an_unconfigured_portal_refuses_rather_than_opens() -> None:
+    """503, not 200. /api carries the only endpoint that can write a price cap."""
+    client = _app_with(Settings(portal_tokens="", portal_api_token=""))
+
+    assert client.get("/api/orders").status_code == 503
+
+
+def test_a_wrong_token_is_401_not_a_hint() -> None:
+    client = _app_with(Settings(portal_tokens=f"{SHARED_TOKEN}:ops@volta.mx"))
+
+    response = client.get("/api/orders", headers={"Authorization": "Bearer tok-wrong"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "unauthorized"

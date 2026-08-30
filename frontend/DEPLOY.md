@@ -46,6 +46,7 @@ by `backend/Dockerfile`. Render prompts for every secret (`sync: false`), so non
 in the repo. The variables it needs:
 
 ```
+PORTAL_TOKENS                              who may use the portal, and as whom
 SUPABASE_URL, SUPABASE_SECRET_KEY          the database
 VAPI_API_KEY, VAPI_PHONE_NUMBER_ID         placing calls
 VAPI_SERVER_SECRET                         verified before any webhook body is parsed
@@ -64,3 +65,33 @@ Then point the Vapi phone number's server URL at `https://<backend>/vapi/events`
 `healthCheckPath` is `/health`, which answers without touching the network on purpose: it is
 the endpoint you need most when the database is the thing that is broken, so it stays a truthful
 liveness signal rather than a database check wearing a health check's name.
+
+
+## The portal's credentials
+
+Every `/api` route needs `Authorization: Bearer <token>`. The operator types the token once on
+the sign-in screen and it is kept in `sessionStorage` — never in the built bundle, because Vite
+inlines `import.meta.env` values into public JavaScript and a token shipped that way is readable
+by anyone who opens devtools.
+
+**Set `PORTAL_TOKENS`, one token per person:**
+
+```
+PORTAL_TOKENS=<long-random>:maria@volta.mx,<long-random>:diego@volta.mx
+```
+
+Generate each with `openssl rand -base64 32`.
+
+This matters more than it looks. The identity is taken from the credential — never from the
+request body — and written into `mandate_set_by` and `decided_by`. Those are the rows somebody
+reads when they ask who authorized the spend. With a single shared token, "maria@volta.mx
+approved this" actually means "somebody holding the shared token approved this": a human-looking
+name claiming more accountability than the system can back. One token per person makes the same
+row true, and lets one person's access be revoked without rotating everyone's.
+
+`PORTAL_API_TOKEN` + `PORTAL_MANAGER_IDENTITY` remain as a single-token fallback for a demo. The
+portal says which mode it is in — the sidebar reads *acting as X*, and admits when that name is
+the deployment's rather than a person's.
+
+With none of them set the portal answers **503**, not 200. `/api` carries the only endpoint that
+can write a price cap; failing open there would be the wrong default.
