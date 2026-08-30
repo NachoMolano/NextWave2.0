@@ -39,6 +39,7 @@ from app.domain import (
     QuoteRow,
     QuoteStatus,
     Store,
+    spoken_window,
 )
 from app.policy import evaluate_quote, select_best
 
@@ -213,6 +214,10 @@ class Market:
             cargo=order.cargo,
             equipment=order.equipment,
             weight=order.weight,
+            # Without this the agent has no date to state and has to ask the carrier when
+            # they could do it, which is the opposite of buying: the window is ours and it
+            # is the second thing said on the call.
+            pickup_window=spoken_window(order.pickup_not_before, order.pickup_not_after),
             counterparty_name=carrier.name,
             counterparty_contact=carrier.contact_name,
             # The figures go in the prompt so the agent can negotiate with judgement instead

@@ -114,6 +114,16 @@ async def test_the_context_never_carries_a_figure_the_carrier_did_not_give() -> 
     assert plans[0].context["reference"] == "OP-1042"
 
 
+async def test_the_rfq_context_carries_the_pickup_window_we_need() -> None:
+    """It shipped without one, so the agent had no date to state and asked the carrier for
+    theirs -- which is what a seller does, not a buyer. The mandate owns the window."""
+    _store, market = seeded()
+
+    plans = await market.plan_rfq(order(), 3)
+
+    assert plans[0].context["pickup_window"] == "between September 2 and September 4, 2026"
+
+
 async def test_a_thin_market_escalates_instead_of_dialling() -> None:
     """Fewer than three is not a market to push through; it is a market with no comparison."""
     store, market = seeded(carriers=2)

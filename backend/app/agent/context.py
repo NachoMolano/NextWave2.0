@@ -17,6 +17,7 @@ from app.domain import (
     CompanyProfile,
     Order,
     QuoteRow,
+    spoken_window,
 )
 
 __all__ = ["CompanySettings", "company_profile_from_settings", "context_from_order"]
@@ -54,11 +55,7 @@ def company_profile_from_settings(settings: CompanySettings) -> CompanyProfile:
 
 
 def _window(order: Order) -> str | None:
-    if order.pickup_not_before is None or order.pickup_not_after is None:
-        return None
-    start = order.pickup_not_before.isoformat()
-    end = order.pickup_not_after.isoformat()
-    return f"{start} to {end}"
+    return spoken_window(order.pickup_not_before, order.pickup_not_after)
 
 
 def _best_rate(quotes: Sequence[QuoteRow], order: Order) -> Decimal | None:

@@ -103,6 +103,56 @@ def test_rfq_uses_a_warm_finite_negotiation_and_quote_tool(
     assert "never imply booking" in runtime
 
 
+def test_rfq_greeting_asks_for_attention_not_a_price(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """It opened with "I am looking for a rate" and the call became a price interrogation
+    before the dispatcher knew what the load was."""
+    greeting = build_greeting(profile, context.model_copy(update={"phase": CallPhase.RFQ}))
+    lowered = greeting.lower()
+
+    assert "need road transport" in lowered
+    assert "rate" not in lowered
+    assert "price" not in lowered
+
+
+def test_rfq_requires_a_real_attempt_to_move_the_price(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """It recorded the carrier's opening figure, said the team would be in touch and hung
+    up. Nothing in the prompt obliged it to push, so it never pushed."""
+    rfq = context.model_copy(update={"phase": CallPhase.RFQ})
+    prompt = build_system_prompt(profile, rfq).lower()
+    runtime = build_runtime_system_prompt(profile, rfq).lower()
+
+    for text in (prompt, runtime):
+        assert "an opening, not an answer" in text
+        assert "at least two genuine" in text
+        assert "what it would take to do better" in text
+        # The sentence wraps in the long prompt, so anchor on the half that never splits.
+        assert "do not deliver that closing before you" in text
+    # The window is ours: the agent states it, it does not shop for one.
+    assert "never ask them what date would suit them" in runtime
+
+
+def test_rfq_figures_are_a_target_to_reach_not_only_a_secret_to_keep(
+    profile: CompanyProfile, context: CallContext
+) -> None:
+    """The mandate block only ever said "never say these", so the model treated the target
+    as a liability to avoid rather than the number it was sent to go and get."""
+    rfq = context.model_copy(update={"phase": CallPhase.RFQ})
+    prompt = build_system_prompt(profile, rfq)
+    runtime = build_runtime_system_prompt(profile, rfq)
+
+    for text in (prompt, runtime):
+        assert "Ceiling: 9,000 USD" in text
+        assert "Target: 8,200 USD" in text
+        lowered = text.lower()
+        assert "what you are negotiating towards" in lowered
+        assert "you have a reason to keep pushing" in lowered
+        assert "never say them out loud" in lowered
+
+
 def test_booking_confirms_exact_terms_without_renegotiating(
     profile: CompanyProfile, context: CallContext
 ) -> None:
