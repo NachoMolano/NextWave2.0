@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     #: Seconds Vapi will wait for our tool server. The maximum is 300; the default is not
     #: documented, so it is set explicitly rather than inherited.
     vapi_tool_timeout_seconds: int = 20
+    #: Which smart-endpointing model decides a caller has finished speaking. Empty derives it
+    #: from the primary language, because 'livekit' is English-only and degrades silently on
+    #: anything else. Set it to override; the ids move, so verify against current Vapi docs.
+    vapi_endpointing_provider: str = ""
+    #: Final pause before the agent speaks, on top of whatever endpointing decided. Raise it
+    #: if the agent still clips the ends of sentences; lower it if the call feels dead.
+    vapi_start_speaking_wait_seconds: float = 0.4
 
     # --- Persistence ---
     supabase_url: str = ""

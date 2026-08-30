@@ -43,9 +43,11 @@ from app.tools.model import (
 )
 
 __all__ = [
+    "STOP_SPEAKING_PLAN",
     "TOOL_ARGUMENT_MODELS",
     "WARM_TRANSFER_PLAN",
     "build_assistant",
+    "build_start_speaking_plan",
     "build_tool_definitions",
     "profile_from_settings",
     "spoken_today",
@@ -103,6 +105,99 @@ WARM_TRANSFER_PLAN: dict[str, Any] = {"mode": "warm-transfer-say-summary"}
 #: transfer-destination-request.
 def transfer_message(profile: CompanyProfile) -> str:
     return escalation_line(profile)
+
+
+#: When the agent stops talking because the caller started. Sent explicitly rather than
+#: inherited: Vapi's defaults are documented but not contractual, and turn-taking is the
+#: first thing a carrier judges us on.
+#:
+#: ``numWords: 0`` is voice-activity detection -- the agent yields on the sound of a voice
+#: rather than waiting for words to come back transcribed, which costs 200-500ms more.
+#: ``voiceSeconds`` is tightened below the 0.2 default because a carrier who has to say
+#: "no, listen" twice has already decided we are a robot. Some run-on past an interruption
+#: is downstream audio already buffered in the telephony leg and no setting removes it.
+#:
+#: ``acknowledgementPhrases`` is the one that earns its place: a carrier saying "mm-hmm"
+#: through the terms read-back is agreeing, not interrupting. Without it every backchannel
+#: cuts the recap short, and the recap is what ``confirm_preagreement`` attests to.
+STOP_SPEAKING_PLAN: dict[str, Any] = {
+    "numWords": 0,
+    "voiceSeconds": 0.1,
+    "backoffSeconds": 0.8,
+    "acknowledgementPhrases": [
+        "okay",
+        "ok",
+        "right",
+        "uh-huh",
+        "mm-hmm",
+        "yeah",
+        "yep",
+        "sure",
+        "got it",
+        "go ahead",
+        "si",
+        "sí",
+        "ajá",
+        "claro",
+        "ándale",
+    ],
+}
+
+#: Words that mean a number is still being spoken. A carrier reading a rate says "eight" and
+#: then "five hundred"; endpointing on the pause between them is how "8500" becomes "8".
+_NUMBER_WORDS = (
+    "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|"
+    "fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|"
+    "sixty|seventy|eighty|ninety|hundred|thousand|point|and"
+)
+
+#: Highest-priority endpointing rules, evaluated before any model or punctuation heuristic.
+#: Both exist to serve invariant 8 -- never infer numbers or dates. A turn that ends on a
+#: number is a turn that may not have finished, so it gets a wait long enough to hear the
+#: rest instead of a proposal built from half an amount.
+#:
+#: Anchored to the end of the turn on purpose. Matching a digit anywhere would put two dead
+#: seconds after "yes, 8500 works for me", which is the sluggishness these rules exist to
+#: avoid everywhere else.
+_NUMERIC_ENDPOINTING_RULES: list[dict[str, Any]] = [
+    {"type": "user", "regex": r"\d\s*$", "timeoutSeconds": 2.0},
+    {"type": "user", "regex": rf"\b({_NUMBER_WORDS})\s*$", "timeoutSeconds": 2.0},
+]
+
+#: Vapi's own model, and the only smart-endpointing provider that is not English-only.
+_NON_ENGLISH_ENDPOINTING_PROVIDER = "vapi"
+_ENGLISH_ENDPOINTING_PROVIDER = "livekit"
+
+
+def _endpointing_provider(profile: CompanyProfile, settings: Settings) -> str:
+    """Which model decides the caller has finished speaking.
+
+    Derived from the profile when unset because ``livekit`` is English-only and silently
+    degrades on anything else: a Spanish call would fall back to punctuation heuristics with
+    nothing in the logs to say so. An explicit setting always wins -- these ids move, and
+    this is the one place a new one can be tried without a code change.
+    """
+    configured = settings.vapi_endpointing_provider.strip()
+    if configured:
+        return configured
+    if profile.primary_language.lower().startswith("en"):
+        return _ENGLISH_ENDPOINTING_PROVIDER
+    return _NON_ENGLISH_ENDPOINTING_PROVIDER
+
+
+def build_start_speaking_plan(profile: CompanyProfile, settings: Settings) -> dict[str, Any]:
+    """When the agent starts talking after the caller stops.
+
+    Without this Vapi endpoints on transcription punctuation, and a carrier who pauses for
+    breath gets a period from the transcriber and an interruption 100ms later. A smart
+    endpointing model reads the content of the turn instead of its punctuation, which is the
+    difference between waiting through "the rate would be, uh" and talking over it.
+    """
+    return {
+        "waitSeconds": settings.vapi_start_speaking_wait_seconds,
+        "smartEndpointingPlan": {"provider": _endpointing_provider(profile, settings)},
+        "customEndpointingRules": [dict(rule) for rule in _NUMERIC_ENDPOINTING_RULES],
+    }
 
 
 def _split_vendor_id(value: str, *, key: str) -> tuple[str, str]:
@@ -312,6 +407,11 @@ def build_assistant(
             "tools": build_tool_definitions(settings),
         },
         "voice": {"provider": voice_provider, "voiceId": voice_id},
+        "startSpeakingPlan": build_start_speaking_plan(profile, settings),
+        "stopSpeakingPlan": {
+            **STOP_SPEAKING_PLAN,
+            "acknowledgementPhrases": list(STOP_SPEAKING_PLAN["acknowledgementPhrases"]),
+        },
         "transcriber": {
             "provider": transcriber_provider,
             "model": transcriber_id,
