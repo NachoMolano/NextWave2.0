@@ -115,7 +115,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         call_placer: CallPlacer,
         call_settings: Settings,
     ) -> dict[str, str]:
-        return await run_campaign(plans, call_placer, call_settings, profile=profile)
+        """Dial, then bind each planned row to the call that was actually placed.
+
+        The write-back lives here rather than in ``run_campaign`` because ``vapi/`` may not
+        import ``store/``. Without it the planned row keeps its ``pending:`` placeholder, the
+        webhook opens a second row under the real id carrying no order and no context, and
+        every tool call in the conversation correlates to that empty one.
+        """
+        placed = await run_campaign(plans, call_placer, call_settings, profile=profile)
+        for call_id, vapi_call_id in placed.items():
+            try:
+                await store.attach_vapi_call_id(call_id, vapi_call_id)
+            except Exception:
+                # The call is already ringing; failing here would strand it entirely. Log
+                # loudly -- this row is now the split-evidence case until someone repairs it.
+                log.exception("call.correlation_failed", call_id=call_id, vapi_call_id=vapi_call_id)
+        return placed
 
     async def dial_plans(plans: list[DialPlan]) -> object:
         """The portal's dialler, with the placer and settings already bound."""

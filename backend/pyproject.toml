@@ -12,6 +12,7 @@ dependencies = [
     "supabase>=2.10",
     "structlog>=24.4",
     "openai>=1.57",
+    "tzdata>=2026.3",
 ]
 
 [dependency-groups]

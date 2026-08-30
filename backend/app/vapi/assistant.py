@@ -149,11 +149,44 @@ def _inline_refs(node: object, defs: dict[str, Any]) -> Any:
     return node
 
 
+def _collapse_any_of(node: object) -> Any:
+    """Rewrite Pydantic's ``anyOf`` union into a single ``type``.
+
+    ``str | None`` compiles to ``{"anyOf": [{"type": "string"}, {"type": "null"}]}`` with no
+    type of its own, and Vapi rejects a property whose ``type`` is absent -- the whole
+    assistant is refused with a 400 before the phone rings. A two-branch union with ``null``
+    is the only union these argument models produce, so it collapses to the JSON Schema
+    array form and keeps the optionality the model needs to omit the field.
+    """
+    if isinstance(node, dict):
+        collapsed = {k: _collapse_any_of(v) for k, v in node.items() if k != "anyOf"}
+        branches = node.get("anyOf")
+        if isinstance(branches, list):
+            types = [b.get("type") for b in branches if isinstance(b, dict)]
+            concrete = [t for t in types if t and t != "null"]
+            if len(concrete) == 1:
+                collapsed["type"] = [concrete[0], "null"] if "null" in types else concrete[0]
+                # Constraints live on the non-null branch; lift them so nothing is lost.
+                for branch in branches:
+                    if isinstance(branch, dict) and branch.get("type") == concrete[0]:
+                        for key, value in branch.items():
+                            if key != "type":
+                                collapsed.setdefault(key, _collapse_any_of(value))
+        return collapsed
+    if isinstance(node, list):
+        return [_collapse_any_of(item) for item in node]
+    return node
+
+
 def _parameters_schema(model: type[BaseModel]) -> dict[str, Any]:
     schema = model.model_json_schema()
     defs = schema.pop("$defs", {})
     resolved = _inline_refs(schema, defs)
     resolved.pop("title", None)
+    resolved = _collapse_any_of(resolved)
+    # Vapi refuses a description on the parameters object itself, though it accepts one on
+    # every property inside it. The tool's own description carries the same text.
+    resolved.pop("description", None)
     return dict(resolved)
 
 

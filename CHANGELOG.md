@@ -16,6 +16,68 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T02:57-0500 · ports, store, main, vapi · nacho
+
+Three carriers, one order, three phones ringing -- verified on a live run.
+
+The dial trigger itself is not mine: `3183b8d` landed the same fix on main first and went
+further, claiming the `rfq-planned` event before it plans so a second click cannot re-dial.
+What follows is what this branch adds on top of it.
+
+`Store` gains **`attach_vapi_call_id(call_id, vapi_call_id)`**. A campaign writes the call row
+— order, carrier, frozen negotiation context — before it dials, because the context is what
+makes a call replayable, but the Vapi id does not exist until the dial returns. The row was
+created with a `pending:` placeholder and nothing ever corrected it, so the webhook opened a
+*second* row under the real id carrying no order and no context. Every tool call in the
+conversation correlated to that empty one. On a live call the evidence for a single
+conversation sat in two rows that never met. Implemented in `store/supabase.py` (update by row
+id — `upsert_call` keys on `vapi_call_id` and would insert rather than correct) and in
+`tests/fakes.py`; the shared store suite covers it against both.
+
+`run_campaign` spaces its dials by `_LAUNCH_SPACING_SECONDS`. Three creates in the same
+millisecond left one call ringing with no assistant on it; the same three two seconds apart
+connected. The spacing sits before the semaphore, so a plan waiting its turn does not hold a
+concurrency slot.
+
+Not fixed, and worth someone's morning: **the mandate currency is dropped**.
+`CallContext.price_ceiling` is a bare `Decimal`, so every builder does `order.cap.amount` and
+throws `order.cap.currency` away; `prompts.py` then reattaches `COMPANY_CURRENCY`. A cap of
+11,000 MXN reaches the agent as `Ceiling: 11,000 USD`. Policy is unaffected — it totals per
+currency against real `Money` — so this is the agent's conversational judgement being
+calibrated in the wrong unit, not an authorization hole. `Money` exists to make this
+impossible and the prompt context is the one place that discards it.
+
+→ Affects: **Everyone** — `ports.py` grew a method, so any `Store` implementation must add it.
+**Track D** — `agent/context.py`'s
+`context_from_order` and `company_profile_from_settings` are exported but imported by nothing;
+the live path uses `market._context_for` and `assistant.profile_from_settings`, and the two
+disagree on date format. One of them is what the next person will read and believe.
+
+## 2026-08-30T02:16-0500 · vapi/assistant · nacho
+
+CP4: the first real outbound call connected. Two things had to change to get there.
+
+`_parameters_schema` now collapses Pydantic's `anyOf` unions into a single `type` and drops
+the `description` on the parameters object. Vapi rejects both — `str | None` compiles to a
+bare `anyOf` with no type of its own, and a description is allowed on every property but not
+on the parameters object that holds them. Either one 400s the *whole* assistant at dial time,
+so every carrier in a campaign fails at once and the log says only "dial failed". Verified
+against the live API, not the docs: the error text names `description` even when the actual
+offender is the missing type.
+
+`tzdata` is now a declared dependency. Without it `zoneinfo` has no database on Windows,
+`spoken_today` fell back to UTC, and the agent read tomorrow's date to a carrier every evening
+after 18:00 Guadalajara. Linux CI has a system tzdb, so it only ever showed on a laptop.
+
+Also found, not fixed: `POST /api/orders/{id}/rfq` calls `market.plan_rfq` and discards the
+returned `list[DialPlan]`. Plans and call rows are written, the order flips to QUOTING, and
+nothing dials. `run_campaign` is wired only to the chase path in `jobs.py`, so the parallel
+RFQ fan-out — the centre of the brief — has no trigger.
+
+→ Affects: **Track C** — `start_rfq` needs the injected dialler to place the plans it makes.
+**Track E** — `sim_tools --url` and `replay_webhook --url` send no `x-vapi-secret`, so both
+get 401 against a correctly configured server and the live HTTP rung cannot be exercised.
+
 ## 2026-08-30T01:52-0500 · frontend · nacho/track-c
 
 The portal, brought over from the old repo's control tower and rewired to `/api`. `dashboard/`

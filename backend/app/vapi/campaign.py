@@ -1,8 +1,10 @@
 """Parallel dial fan-out. Three carriers at once is the point of the whole exercise.
 
 asyncio.gather over a plan from tools/market.py, bounded by a semaphore below Vapi's
-default of 10 concurrent slots so a retry has room. A call that comes back queued with
-concurrencyBlocked is retried, not failed.
+default of 10 concurrent slots so a retry has room, and spaced by
+``_LAUNCH_SPACING_SECONDS`` so three dials from one number do not race the provider's
+outbound rate limit. A call that comes back queued with concurrencyBlocked is retried,
+not failed.
 
 Two decisions worth stating:
 
@@ -38,6 +40,18 @@ _MAX_CONCURRENCY_ATTEMPTS = 4
 #: Seconds to wait before asking Vapi for a slot again. Doubles per attempt.
 _BACKOFF_SECONDS = 2.0
 
+#: Seconds between one dial starting and the next. Every call in a campaign leaves from the
+#: same phone number, and three ``create`` requests inside the same millisecond do not all
+#: survive it: on a live three-carrier run one call reached Twilio, rang, and never got an
+#: assistant on the line. Dialling the same three two seconds apart, that call connected
+#: normally. The measured effect is on assistant start-up, not on origination -- a fourth
+#: number failed identically whether it went out in a burst or first and alone, so this
+#: spacing is not a cure for a destination the provider cannot route to.
+#:
+#: The cost is four seconds across three carriers, and the conversations still overlap
+#: completely, which is what "in parallel" has to mean here.
+_LAUNCH_SPACING_SECONDS = 2.0
+
 
 async def run_campaign(
     plans: list[DialPlan],
@@ -62,7 +76,11 @@ async def run_campaign(
     limit = max(1, settings.max_concurrent_calls)
     gate = asyncio.Semaphore(limit)
 
-    async def dial(plan: DialPlan) -> tuple[str, str]:
+    async def dial(plan: DialPlan, position: int) -> tuple[str, str]:
+        # Before the semaphore: a plan waiting its turn must not hold a slot while it waits.
+        if position:
+            await sleep(position * _LAUNCH_SPACING_SECONDS)
+
         context = CallContext.model_validate(plan.context)
         assistant = build_assistant(profile, context, settings)
 
@@ -88,7 +106,9 @@ async def run_campaign(
             delay *= 2
         raise AssertionError("unreachable: the final attempt either returns or raises")
 
-    outcomes = await asyncio.gather(*(dial(plan) for plan in plans), return_exceptions=True)
+    outcomes = await asyncio.gather(
+        *(dial(plan, i) for i, plan in enumerate(plans)), return_exceptions=True
+    )
 
     placed: dict[str, str] = {}
     for plan, outcome in zip(plans, outcomes, strict=True):
