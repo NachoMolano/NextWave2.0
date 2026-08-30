@@ -1,0 +1,67 @@
+# Render blueprint for the backend. The portal is on Vercel and is not described here.
+#
+# Everything under envVars is `sync: false`, which means Render prompts for the value and keeps
+# it out of the repository. None of these have defaults on purpose: config.py defaults every key
+# to empty rather than to something plausible, because a default API key that silently does
+# nothing is worse than a crash, and a default price cap would be a mandate nobody granted.
+services:
+  - type: web
+    name: volta-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      # --- persistence ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+
+      # --- the phone ---
+      - key: VAPI_API_KEY
+        sync: false
+      - key: VAPI_PHONE_NUMBER_ID
+        sync: false
+      # Sent by Vapi as X-Vapi-Secret and verified before a webhook body is parsed.
+      - key: VAPI_SERVER_SECRET
+        sync: false
+      # Model, voice and transcriber ids move and most tutorials are stale. Verify each
+      # against current Vapi docs; never hardcode one in source.
+      - key: VAPI_MODEL
+        sync: false
+      - key: VAPI_VOICE_ID
+        sync: false
+      - key: VAPI_TRANSCRIBER
+        sync: false
+
+      # --- post-call extraction only, never in the conversational path ---
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_REPORT_MODEL
+        sync: false
+
+      # --- the outbox. Delivery is what promotes a commitment to committed. ---
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFY_FROM_EMAIL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      - key: MANAGER_EMAIL
+        sync: false
+      - key: MANAGER_WHATSAPP
+        sync: false
+      - key: ESCALATION_PHONE_NUMBER
+        sync: false
+
+      # What Vapi calls back into. Set it to this service's own URL once Render assigns one.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: ENVIRONMENT
+        value: demo

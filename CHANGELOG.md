@@ -16,6 +16,44 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T01:52-0500 · frontend · nacho/track-c
+
+The portal, brought over from the old repo's control tower and rewired to `/api`. `dashboard/`
+is now **`frontend/`**, which is a rename away from what BUILD_PLAN section 1 says.
+
+BUILD_PLAN describes it as "existing frontend -- untouched, consumes /api". Neither half was
+true: it was not in this repo at all, and its client called `/operations`,
+`/operations/{id}/workspace` and `/operations/{id}/rfqs/{id}/activate` -- no `/api` prefix and
+an operations/workspace/rfq vocabulary with no counterpart in the ten-table schema. It could
+not have been pointed at this backend.
+
+What carried over: the design system (~280 lines of tokens, and the class names mostly already
+fit -- `.mandate-card`, `.countdown.urgent`, `.offer-card`, `.transcript-line` with its anchor
+column), the shell, hash routing, and the queue then detail then evidence shape. What was
+rewritten: `types.ts` and `api.ts` entirely, and `App.tsx` against the new aggregate. Screens
+are Operations, Operation, Approvals, Carriers, Call evidence.
+
+Verified end to end against a running backend and live Supabase, not merely compiled: granting
+a mandate through the portal produced `mandate_version = 1`, `mandate_set_by = diego@volta.test`,
+`status = quoting` and one `mandate.set:<order>:v1` ledger row. `npm run build` and `oxlint`
+are clean.
+
+Two things worth knowing:
+
+- **CORS does not exist and did not need to.** Vite proxies `/api` and `/health` in
+  development, so the browser makes a same-origin request. A deployed build either ships from
+  the API's origin or needs a narrow allowlist -- `*` is the wrong answer on the surface that
+  carries the only endpoint able to write a price cap. No change to `main.py` was required.
+- **The live store suite had been writing into the demo database.** Seven `OP-TEST-*` orders
+  and twelve test carriers were sitting in the queue against one real order, because cleanup
+  cannot delete an order once an event references it. Removed as table owner. That suite is
+  opt-in and should point at a scratch project, never this one.
+
+Affects: **nobody's files** -- `frontend/` is new and no track owned `dashboard/`. Worth
+knowing anyway: the portal is step 9 of Flow A, so it is on the live demo path.
+
+---
+
 ## 2026-08-30T01:42-0500 · integration, ci · codex
 
 All four tracks are reconciled on the Track C branch. `main.py` now injects the real tool,
