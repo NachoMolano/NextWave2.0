@@ -37,6 +37,7 @@ from app.domain import (
     Order,
     OrderStatus,
     PolicyDecision,
+    PolicyOutcome,
     QuoteProposal,
     QuoteRow,
     QuoteStatus,
@@ -485,12 +486,24 @@ class Market:
         )
         return approval.model_copy(update={"id": approval_id})
 
-    async def award(self, order: Order, approval: Approval) -> str:
-        """Revalidate and accept the approved winner against current trusted state."""
+    async def award(self, order: Order, approval: Approval, chosen_quote_id: str = "") -> str:
+        """Revalidate and accept the approved carrier against current trusted state.
+
+        ``chosen_quote_id`` lets a person award someone other than the ranked winner. The
+        ranking is deterministic on cost, and cost is not the only thing an operator knows:
+        a carrier who has never missed a window is worth a hundred dollars, and that
+        judgement is theirs to make and ours to record.
+
+        What it is *not* is a way around the mandate. The chosen quote is re-evaluated under
+        current policy like any other, and only an entry policy currently ALLOWS may be
+        awarded. Awarding an over-cap quote still requires raising the ceiling, which bumps
+        the mandate version and re-evaluates every option -- so the refusal a judge sees is
+        never undone by a click, only by a new authority with a name on it.
+        """
         if approval.status is not ApprovalStatus.APPROVED:
             raise ValueError("an award requires an approved approval; nothing else authorizes one")
 
-        quote_id = str(approval.context.get("winner_quote_id") or "")
+        quote_id = chosen_quote_id or str(approval.context.get("winner_quote_id") or "")
         if not quote_id:
             raise ValueError("the approval carries no winning quote")
 
@@ -511,8 +524,18 @@ class Market:
             return quote_id
 
         current = await self.rank(order)
-        if current.winner_quote_id != quote_id:
-            raise ValueError("the approved quote is no longer the current eligible winner")
+        eligible = {
+            entry.quote_id
+            for entry in current.entries
+            if entry.outcome == PolicyOutcome.ALLOW.value
+        }
+        if quote_id not in eligible:
+            # Covers both cases with one check: the ranked winner that has since gone stale,
+            # and an operator choosing a carrier policy will not allow.
+            raise ValueError(
+                "that quote is not eligible under the current mandate; raise the ceiling or "
+                "reopen the market"
+            )
 
         try:
             await self._store.accept_quote(order.id, quote_id)

@@ -120,6 +120,12 @@ class ApprovalDecisionRequest(BaseModel):
 
     status: str = Field(pattern="^(approved|rejected|handled|expired)$")
     note: str | None = None
+    quote_id: str | None = Field(
+        default=None,
+        description="Award this carrier instead of the ranked winner. The choice is still "
+        "evaluated under current policy: an operator may pick among the options policy "
+        "allows, never around them.",
+    )
 
 
 # --------------------------------------------------------------------------- what it reads back

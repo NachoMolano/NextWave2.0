@@ -433,3 +433,49 @@ async def test_quotes_that_all_miss_the_ceiling_still_reach_a_person_as_an_award
     assert approval.reason is ApprovalReason.NO_ELIGIBLE_CANDIDATE
     saved = await store.order("order-1")
     assert saved is not None and saved.status is OrderStatus.AWAITING_APPROVAL
+
+
+async def test_an_operator_may_award_an_eligible_carrier_that_is_not_the_winner() -> None:
+    """The ranking is deterministic on cost. Cost is not everything an operator knows.
+
+    A carrier who has never missed a window is worth a hundred dollars, and that judgement
+    is theirs to make -- so the comparison offers every eligible option, not just the
+    cheapest, and records which one a person chose.
+    """
+    store, market = seeded()
+    cheap = await store.add_quote(quote("carrier-1", 800_000))
+    dearer = await store.add_quote(quote("carrier-2", 850_000))
+    comparison = await market.rank(order())
+    assert comparison.winner_quote_id == cheap, "the cheapest is still what policy recommends"
+
+    approval = (await market.request_award_approval(order(), comparison)).model_copy(
+        update={"status": ApprovalStatus.APPROVED}
+    )
+    awarded = await market.award(order(), approval, chosen_quote_id=dearer)
+
+    assert awarded == dearer
+    saved = await store.quote(dearer)
+    assert saved is not None and saved.status is QuoteStatus.ACCEPTED
+
+
+async def test_an_operator_may_not_award_a_quote_policy_refused() -> None:
+    """Choosing among the options policy allows is judgement. Choosing around them is not.
+
+    Awarding an over-cap quote still means raising the ceiling, which bumps the mandate
+    version and re-evaluates everything -- so a refusal a judge watched happen is never
+    undone by a click, only by a new authority with a name on it.
+    """
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 800_000))
+    over_cap = await store.add_quote(quote("carrier-2", 1_500_000))
+    comparison = await market.rank(order())
+
+    approval = (await market.request_award_approval(order(), comparison)).model_copy(
+        update={"status": ApprovalStatus.APPROVED}
+    )
+
+    with pytest.raises(ValueError, match="not eligible under the current mandate"):
+        await market.award(order(), approval, chosen_quote_id=over_cap)
+
+    saved = await store.quote(over_cap)
+    assert saved is not None and saved.status is not QuoteStatus.ACCEPTED

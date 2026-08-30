@@ -456,7 +456,7 @@ def create_api_router(
         if (
             body.status == "approved"
             and str(approval.kind) == "award_approval"
-            and not approval.context.get("winner_quote_id")
+            and not (body.quote_id or approval.context.get("winner_quote_id"))
         ):
             raise HTTPException(
                 status_code=409,

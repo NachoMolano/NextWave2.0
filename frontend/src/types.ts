@@ -328,6 +328,11 @@ export interface SetMandateRequest {
 export interface ApprovalDecisionRequest {
   status: 'approved' | 'rejected' | 'handled' | 'expired'
   note: string | null
+  /**
+   * Award this carrier instead of the ranked winner. Still evaluated under current policy:
+   * an operator picks among the options policy allows, never around them.
+   */
+  quote_id?: string | null
 }
 
 

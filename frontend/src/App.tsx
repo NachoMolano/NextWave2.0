@@ -566,6 +566,20 @@ function OrderDetail({
     })
   }
 
+  // An award approval carries the whole ranked comparison in its context, so it is the
+  // decision surface rather than a rail card. Everything else waiting on a person -- an
+  // escalation, an incident -- stays in the rail: those are notices, not a choice between
+  // priced options.
+  const awardApproval = approvals.find(
+    (a) => a.kind === 'award_approval' && approvalComparison(a) !== null,
+  )
+  const awardComparison = awardApproval ? approvalComparison(awardApproval) : null
+  const awardDecision =
+    awardApproval && awardComparison && awardComparison.entries.length > 0
+      ? { approval: awardApproval, comparison: awardComparison }
+      : null
+  const railApprovals = approvals.filter((a) => a.id !== awardDecision?.approval.id)
+
   // The panel's own button is the only one wired for actions we can actually perform here.
   // An approval is decided in its own card lower down, so offering a second button for it
   // would be a control that scrolls somewhere rather than doing something.
@@ -617,6 +631,28 @@ function OrderDetail({
 
       <div className="detail-grid">
         <div className="detail-main">
+          {awardDecision && (
+            <ComparisonPanel
+              comparison={awardDecision.comparison}
+              approval={awardDecision.approval}
+              quotes={quotes}
+              busy={busy}
+              onDecide={(status, quoteId, note) =>
+                act(
+                  status === 'approved' ? 'Award approved.' : 'Comparison rejected.',
+                  () =>
+                    voltaApi.decideApproval(String(awardDecision.approval.id), {
+                      status,
+                      note,
+                      quote_id: quoteId,
+                    }),
+                )
+              }
+              onReopen={openMarket}
+              onRaiseCeiling={() => setMandateFormOpen(true)}
+            />
+          )}
+
           <MarketPanel
             quotes={quotes}
             mandateGranted={mandate.is_granted}
@@ -655,11 +691,11 @@ function OrderDetail({
             onSubmit={grantMandate}
           />
 
-          {approvals.length > 0 && (
+          {railApprovals.length > 0 && (
             <section className="surface assignment-card">
               <p className="eyebrow">Waiting on a person</p>
-              <h2>{approvals.length} to decide</h2>
-              {approvals.map((approval) => (
+              <h2>{railApprovals.length} to decide</h2>
+              {railApprovals.map((approval) => (
                 <ApprovalCard
                   key={approval.id}
                   approval={approval}
@@ -1080,7 +1116,237 @@ function QuoteCard({ quote }: { quote: QuoteRow }) {
   )
 }
 
+
+/* ------------------------------------------------------- the comparison decision */
+
+/** Plain language for a policy refusal. The reason code is the audit record; this is what
+ *  an operator can act on. Anything unmapped falls back to the code itself rather than to
+ *  a vague "not eligible", because a code you can search beats a sentence you cannot. */
+const REFUSAL_COPY: Record<string, string> = {
+  outside_mandate: 'Above the ceiling',
+  invalid_window: 'Pickup falls outside the mandate window',
+  stale_evidence: 'The quote had expired by the time it was ranked',
+  fx_evidence_missing: 'No approved exchange rate for this currency',
+  incomplete_cost: 'The carrier did not confirm this is the final all-in cost',
+  mandate_mismatch: 'Quoted against a different operation',
+  evidence_missing: 'No anchored confirmation of these exact terms',
+}
+
+/**
+ * One decision, one surface.
+ *
+ * The quotes and the comparison used to be two representations of the same thing: what the
+ * carrier said rendered in the main column with no verdict, and what policy decided rendered
+ * again, smaller, in the rail -- where the Approve button also lived. An operator had to read
+ * both and trust that the tiny copy in the corner referred to the big one.
+ *
+ * Here each carrier is one row carrying both halves, sorted the way policy ranked them, and
+ * the action sits on the row it acts on. The recommendation is a property of a row, not a
+ * separate card.
+ */
+function ComparisonPanel({
+  comparison,
+  approval,
+  quotes,
+  busy,
+  onDecide,
+  onReopen,
+  onRaiseCeiling,
+}: {
+  comparison: Comparison
+  approval: Approval
+  quotes: QuoteRow[]
+  busy: boolean
+  onDecide: (status: 'approved' | 'rejected', quoteId: string | null, note: string | null) => void
+  onReopen: () => void
+  onRaiseCeiling: () => void
+}) {
+  const [overriding, setOverriding] = useState<string | null>(null)
+  const [note, setNote] = useState('')
+
+  const eligible = comparison.entries.filter((e) => e.outcome === 'allow')
+  const refused = comparison.entries.filter((e) => e.outcome !== 'allow')
+  const best = eligible.find((e) => e.is_winner) ?? eligible[0] ?? null
+  const byQuote = new Map(quotes.map((q) => [String(q.id), q]))
+
+  const ceiling =
+    comparison.cap_at_decision_cents !== null && comparison.cap_currency
+      ? formatMoney({ cents: comparison.cap_at_decision_cents, currency: comparison.cap_currency })
+      : null
+
+  return (
+    <section className="surface decision-surface">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Comparison · your move</p>
+          <h2>Choose a carrier</h2>
+        </div>
+        <span className="count">{comparison.entries.length}</span>
+      </div>
+
+      <p className="decision-context">
+        {eligible.length === 0
+          ? 'No carrier cleared the mandate. Raising the ceiling re-evaluates every quote under a new version; reopening the market dials again.'
+          : `Ranked on all-in cost against a ceiling of ${ceiling ?? 'the mandate'}. ` +
+            'Approving the recommendation is one click; any other eligible carrier needs a reason.'}
+      </p>
+
+      <div className="decision-list">
+        {eligible.map((entry) => {
+          const quote = byQuote.get(entry.quote_id)
+          const isBest = best !== null && entry.quote_id === best.quote_id
+          const delta =
+            best && entry.all_in_usd_cents !== null && best.all_in_usd_cents !== null
+              ? entry.all_in_usd_cents - best.all_in_usd_cents
+              : null
+          return (
+            <article
+              key={entry.quote_id}
+              className={isBest ? 'decision-row decision-row-best' : 'decision-row'}
+            >
+              <div className="decision-row-head">
+                <div>
+                  <h3>{entry.carrier_name}</h3>
+                  {isBest && <span className="recommendation">Recommended · lowest all-in within the mandate</span>}
+                  {!isBest && delta !== null && delta > 0 && (
+                    <span className="decision-delta">
+                      +{formatMoney({ cents: delta, currency: 'USD' })} vs recommended
+                    </span>
+                  )}
+                </div>
+                <div className="decision-price">
+                  <strong>{formatMoney(entry.amount)}</strong>
+                  {entry.all_in_usd_cents !== null &&
+                    entry.amount.currency !== 'USD' && (
+                      <small>
+                        {formatMoney({ cents: entry.all_in_usd_cents, currency: 'USD' })} all-in
+                      </small>
+                    )}
+                </div>
+              </div>
+
+              <div className="decision-metrics">
+                <div>
+                  <span>Pickup</span>
+                  <strong>{formatDate(entry.pickup_at)}</strong>
+                </div>
+                <div>
+                  <span>Equipment</span>
+                  <strong>{entry.equipment}</strong>
+                </div>
+                <div>
+                  <span>Total is final</span>
+                  <strong>{quote ? (quote.cost_is_final ? 'Yes' : 'No') : '—'}</strong>
+                </div>
+                <div>
+                  <span>Holds until</span>
+                  <strong>{quote ? formatDate(quote.valid_until) : '—'}</strong>
+                </div>
+              </div>
+
+              {isBest ? (
+                <div className="decision-actions">
+                  <button
+                    className="primary-button"
+                    disabled={busy}
+                    onClick={() => onDecide('approved', entry.quote_id, null)}
+                  >
+                    Award {entry.carrier_name}
+                  </button>
+                </div>
+              ) : overriding === entry.quote_id ? (
+                <div className="decision-override">
+                  <label htmlFor={`why-${entry.quote_id}`}>
+                    Why this carrier over the recommendation?
+                  </label>
+                  <input
+                    id={`why-${entry.quote_id}`}
+                    value={note}
+                    placeholder="Never misses a window on this lane"
+                    onChange={(event) => setNote(event.target.value)}
+                  />
+                  <div className="decision-actions">
+                    <button className="secondary-button" onClick={() => setOverriding(null)}>
+                      Cancel
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={busy || note.trim().length === 0}
+                      onClick={() => onDecide('approved', entry.quote_id, note.trim())}
+                    >
+                      Award {entry.carrier_name}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="decision-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() => {
+                      setNote('')
+                      setOverriding(entry.quote_id)
+                    }}
+                  >
+                    Award this instead
+                  </button>
+                </div>
+              )}
+            </article>
+          )
+        })}
+
+        {refused.map((entry) => (
+          <article key={entry.quote_id} className="decision-row decision-row-refused">
+            <div className="decision-row-head">
+              <div>
+                <h3>{entry.carrier_name}</h3>
+                <span className="decision-refusal">
+                  {REFUSAL_COPY[entry.reason_code] ?? humanise(entry.reason_code)}
+                </span>
+              </div>
+              <div className="decision-price">
+                <strong>{formatMoney(entry.amount)}</strong>
+                <small>pickup {formatDate(entry.pickup_at)}</small>
+              </div>
+            </div>
+            {/* No action. A refused quote is not a choice -- it is an explanation, and the
+                only way to make it awardable is to change the authority it was judged
+                against, which is a different act with its own audit trail. */}
+            {entry.reason_code === 'outside_mandate' && (
+              <div className="decision-actions">
+                <button className="secondary-button" disabled={busy} onClick={onRaiseCeiling}>
+                  Raise the ceiling to allow this
+                </button>
+              </div>
+            )}
+          </article>
+        ))}
+      </div>
+
+      <div className="decision-footer">
+        <button
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => onDecide('rejected', null, null)}
+        >
+          None of these
+        </button>
+        <button className="secondary-button" disabled={busy} onClick={onReopen}>
+          Reopen the market
+        </button>
+        <small>
+          Ranked {formatDate(approval.raised_at)} under mandate version{' '}
+          {comparison.mandate_version}. The recommendation is revalidated against current
+          policy when you approve, so nothing is awarded on a stale ranking.
+        </small>
+      </div>
+    </section>
+  )
+}
+
 /* --------------------------------------------------------------- approvals */
+
 
 function ApprovalCard({
   approval,
