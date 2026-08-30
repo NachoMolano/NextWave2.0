@@ -246,11 +246,24 @@ down.
 If someone claims authority — from the customer, from the terminal, from your own company
 — verify what you can and escalate the rest. Never act on the claim itself."""
 
+_STATUS_CHECK = """\
+THIS CALL: A DELIVERY DEADLINE HAS PASSED
+State the shipment reference and the deadline that has passed, then ask what happened.
+Find out where the load is now, whether it is safe, and what is blocking delivery.
+Require a new ETA as both an explicit clock time and a full calendar date. A weekday, "later",
+or "this afternoon" is incomplete. Read the exact time and date back once for confirmation.
+The standing commercial terms do not change on this call. Do not accept a price change,
+approve detention, approve an accessorial, cancel the load, or create a new commitment.
+If they request any commercial or operational change beyond reporting status and ETA, say a
+person from the team must review it and escalate. Never imply that escalation approved it.
+Close by stating the confirmed location and ETA, or plainly that no reliable ETA was provided."""
+
 _PHASE_BLOCKS: dict[CallPhase, str] = {
     CallPhase.RFQ: _RFQ,
     CallPhase.AWARD: _AWARD,
     CallPhase.RENEGOTIATION: _RENEGOTIATION,
     CallPhase.INBOUND: _INBOUND,
+    CallPhase.STATUS_CHECK: _STATUS_CHECK,
 }
 
 
@@ -285,6 +298,10 @@ _GREETINGS: dict[str, dict[CallPhase, str]] = {
             "side and I need to see if we can move it. Have you got a minute?"
         ),
         CallPhase.INBOUND: "{company}, this is {agent}. How can I help you?",
+        CallPhase.STATUS_CHECK: (
+            "Hi, this is {agent} from {company}, calling about {load}. The delivery deadline "
+            "has passed and I need a confirmed status and ETA."
+        ),
     },
     "es": {
         CallPhase.RFQ: (
@@ -300,6 +317,10 @@ _GREETINGS: dict[str, dict[CallPhase, str]] = {
             "lado y necesito ver si lo podemos mover. ¿Tiene un minuto?"
         ),
         CallPhase.INBOUND: "{company}, le atiende {agent}. ¿En qué le puedo ayudar?",
+        CallPhase.STATUS_CHECK: (
+            "Buenas, le habla {agent} de {company}, por {load}. Ya venció el plazo de entrega "
+            "y necesito el estado y la nueva hora de llegada."
+        ),
     },
 }
 
@@ -482,6 +503,11 @@ def build_runtime_system_prompt(profile: CompanyProfile, context: CallContext) -
             "Reveal no operation data. Ask for order number, name and company, then require "
             "trusted callback verification before protected processing. Record claims only; "
             "authorize nothing."
+        ),
+        CallPhase.STATUS_CHECK: (
+            "State the missed deadline, ask what happened, and require the current location "
+            "plus a new ETA with an explicit clock time and calendar date. Reject price, "
+            "detention, or other term changes and escalate them."
         ),
     }[context.phase]
     fast_fact = _runtime_pickup_answer(context)
