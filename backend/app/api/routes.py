@@ -39,6 +39,7 @@ from app.api.schemas import (
     BusinessProfile,
     BusinessProfileUpdate,
     CallDetail,
+    ConfirmIntakeRequest,
     DemurrageView,
     MandateView,
     NewOrderRequest,
@@ -241,6 +242,49 @@ def create_api_router(
             approvals=approvals,
         )
 
+    @router.post("/orders/{order_id}/intake", response_model=OrderAggregate)
+    async def confirm_intake(
+        order_id: str,
+        body: ConfirmIntakeRequest,
+        actor: Annotated[str, Depends(portal_actor)],
+    ) -> OrderAggregate:
+        """Stage 1. Confirm the container is released, and close the gaps intake owns.
+
+        Separate from creating the order because they are different acts by different
+        parties: an order arrives from a document, and a person then checks it is real and
+        may move. Collapsing them is how three carriers came to be dialled for a container
+        nobody had confirmed was released, on a lane with no clock at all.
+
+        Releasing is reversible. ``released: false`` clears it, which is the stop switch when
+        something changes after the market is open -- the mandate and the dialler both read
+        the same flag.
+        """
+        order = await _load(order_id)
+        gaps = body.model_dump(exclude_none=True, exclude={"released", "note"})
+        updated = order.model_copy(
+            update={
+                **gaps,
+                "released_at": now() if body.released else None,
+                "released_by": actor if body.released else None,
+                "release_note": body.note,
+            }
+        )
+        with _guard():
+            await store.save_order(updated)
+            await store.append_event(
+                EventRow(
+                    order_id=order.id,
+                    type="intake.released" if body.released else "intake.held",
+                    payload={"by": actor, "note": body.note or ""},
+                    # Keyed on the decision, not the moment: confirming twice is one fact,
+                    # and a hold after a release is a different one.
+                    idempotency_key=(
+                        f"intake:{order.id}:{'released' if body.released else 'held'}"
+                    ),
+                )
+            )
+        return await get_order(order_id)
+
     @router.post("/orders/{order_id}/mandate", response_model=OrderAggregate)
     async def set_mandate(
         order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(portal_actor)]
@@ -258,6 +302,26 @@ def create_api_router(
         progress label.
         """
         order = await _load(order_id)
+        if not order.is_released:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This container has not been confirmed as released. Confirm intake "
+                    "before granting authority to spend against it."
+                ),
+            )
+        if not order.has_clock and body.delivery_deadline is None:
+            # The complaint that produced this check: a mandate was granted, and three
+            # carriers dialled, on a lane with neither a last free day nor a cutoff. A
+            # ceiling with no clock is an authority to negotiate with no reason to hurry.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This operation has no deadline: set a last free day (import demurrage) "
+                    "or a cargo cutoff before granting a mandate. Free time is what makes "
+                    "the pickup window worth negotiating."
+                ),
+            )
         if order.mandate_version != body.expected_version:
             raise HTTPException(
                 status_code=409,
@@ -306,6 +370,16 @@ def create_api_router(
     async def start_rfq(order_id: str) -> OrderAggregate:
         """Open the market. Refuses without a mandate: nothing is authorized yet."""
         order = await _load(order_id)
+        if not order.is_released:
+            # Defence in depth: the mandate gate above already refuses, but a release can be
+            # withdrawn after one was granted and the phone must stop when it is.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"order {order.reference} is not released: nothing may be dialled for a "
+                    "container that has not been confirmed as available to move"
+                ),
+            )
         if not order.has_mandate:
             raise HTTPException(
                 status_code=409,

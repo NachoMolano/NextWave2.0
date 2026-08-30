@@ -235,6 +235,17 @@ def _new_order(reference: str = "OP-MZO-0001") -> dict[str, object]:
     }
 
 
+def _confirm_intake(client: TestClient, order_id: str) -> None:
+    """Stage 1, which every mandate now requires.
+
+    Granting authority to spend against a container nobody confirmed was released is what
+    the release gate exists to refuse, so the tests have to walk through it like the portal
+    does. ``_new_order`` already carries a last free day, so the clock is satisfied.
+    """
+    response = client.post(f"/api/orders/{order_id}/intake", json={"released": True})
+    assert response.status_code == 200, response.text
+
+
 def _mandate() -> dict[str, object]:
     return {
         "cap_amount_cents": 900_000,
@@ -319,6 +330,7 @@ def test_setting_a_mandate_bumps_the_version_and_records_who() -> None:
     client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
+    _confirm_intake(client, order_id)
     body = client.post(f"/api/orders/{order_id}/mandate", json=_mandate()).json()
 
     assert body["mandate"]["version"] == 1
@@ -338,6 +350,7 @@ def test_granting_a_mandate_does_not_open_the_market_by_itself() -> None:
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
+    _confirm_intake(client, order_id)
     body = client.post(f"/api/orders/{order_id}/mandate", json=_mandate()).json()
 
     assert body["order"]["status"] == "received"
@@ -351,9 +364,11 @@ def test_raising_the_cap_versions_it_rather_than_overwriting() -> None:
     """Decisions copy the ceiling by value, so an old refusal stays explainable."""
     client, store, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
     raised = dict(_mandate(), cap_amount_cents=1_200_000, expected_version=1)
+    _confirm_intake(client, order_id)
     body = client.post(f"/api/orders/{order_id}/mandate", json=raised).json()
 
     assert body["mandate"]["version"] == 2
@@ -367,8 +382,10 @@ def test_a_stale_mandate_write_is_rejected() -> None:
     """Two dashboards cannot silently overwrite one another's authority."""
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
+    _confirm_intake(client, order_id)
     assert client.post(f"/api/orders/{order_id}/mandate", json=_mandate()).status_code == 409
 
 
@@ -378,6 +395,7 @@ def test_a_stale_mandate_write_is_rejected() -> None:
 def test_the_market_will_not_open_without_a_mandate() -> None:
     client, _, market, _, dial = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
 
     response = client.post(f"/api/orders/{order_id}/rfq")
 
@@ -387,10 +405,74 @@ def test_the_market_will_not_open_without_a_mandate() -> None:
     assert dial.numbers_dialled == []
 
 
+def test_the_market_will_not_open_on_an_unreleased_container() -> None:
+    """The release gate, from the dialling side.
+
+    A release can be withdrawn after a mandate was granted -- the box is held, the booking
+    slips -- and the phone has to stop when it is, not only at the moment authority was
+    given. Three carriers were dialled for a container nobody had confirmed.
+    """
+    client, _, _, _, dial = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
+    client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+    client.post(f"/api/orders/{order_id}/intake", json={"released": False, "note": "held"})
+
+    response = client.post(f"/api/orders/{order_id}/rfq")
+
+    assert response.status_code == 409
+    assert "not released" in response.json()["detail"]
+    assert dial.numbers_dialled == []
+
+
+def test_a_mandate_needs_the_container_released_first() -> None:
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+
+    response = client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+
+    assert response.status_code == 409
+    assert "not been confirmed as released" in response.json()["detail"]
+
+
+def test_a_mandate_needs_a_clock() -> None:
+    """A ceiling with no deadline is authority to negotiate with no reason to hurry.
+
+    OP-MIA-0002 was granted a mandate and dialled three carriers with neither a last free
+    day nor a cargo cutoff, so the agent's strongest honest lever -- trading pickup timing
+    for rate -- was a lever it did not know it had.
+    """
+    client, _, _, _, _ = build()
+    order = {**_new_order(), "free_days": None, "last_free_day": None}
+    order_id = client.post("/api/orders", json=order).json()["id"]
+    _confirm_intake(client, order_id)
+
+    response = client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+
+    assert response.status_code == 409
+    assert "no deadline" in response.json()["detail"]
+
+
+def test_a_cargo_cutoff_satisfies_the_clock_on_an_export() -> None:
+    """An export has no demurrage. Its clock is the cutoff, and it counts."""
+    client, _, _, _, _ = build()
+    order = {**_new_order(), "free_days": None, "last_free_day": None}
+    order_id = client.post("/api/orders", json=order).json()["id"]
+    client.post(
+        f"/api/orders/{order_id}/intake",
+        json={"released": True, "delivery_deadline": "2026-09-04T18:00:00Z"},
+    )
+
+    response = client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
+
+    assert response.status_code == 200
+
+
 def test_opening_the_market_asks_for_at_least_three_carriers() -> None:
     """The brief requires three. The count comes from config, never from a caller."""
     client, _, market, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
     client.post(f"/api/orders/{order_id}/rfq")
@@ -407,6 +489,7 @@ def test_opening_the_market_actually_dials() -> None:
     """
     client, _, _, _, dial = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
     client.post(f"/api/orders/{order_id}/rfq")
@@ -422,6 +505,7 @@ def test_opening_the_market_twice_dials_nobody_twice() -> None:
     """
     client, _, _, _, dial = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
     client.post(f"/api/orders/{order_id}/rfq")
@@ -434,6 +518,7 @@ def test_opening_the_market_twice_dials_nobody_twice() -> None:
 def test_the_comparison_carries_the_cap_it_was_ranked_against() -> None:
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
     body = client.get(f"/api/orders/{order_id}/comparison").json()
@@ -514,6 +599,7 @@ def test_a_dial_round_that_places_nothing_is_a_502_not_a_silent_200() -> None:
     no record of any call. Three carriers were left un-dialled that way on 30 Aug."""
     client, _, market, _, _ = build(dial=FakeDialler(places=False))
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
 
     response = client.post(f"/api/orders/{order_id}/rfq")
@@ -529,6 +615,7 @@ def test_a_failed_dial_round_can_be_retried() -> None:
     mandate version -- the only escape was raising the ceiling to bump it."""
     client, _, _, _, dial = build(dial=FakeDialler(places=False))
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
     assert client.post(f"/api/orders/{order_id}/rfq").status_code == 502
 
@@ -868,6 +955,7 @@ def test_an_open_market_is_working_not_waiting() -> None:
     """Carriers being dialled is the machine doing its job. It must not read as urgent."""
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
     client.post(f"/api/orders/{order_id}/mandate", json=_mandate())
     client.post(f"/api/orders/{order_id}/rfq")
 
@@ -893,6 +981,7 @@ def test_the_queue_puts_what_is_blocked_on_a_person_first() -> None:
     """A queue ordered by created_at makes someone read every row to find their own."""
     client, store, _, _, _ = build()
     quiet = client.post("/api/orders", json=_new_order("OP-QUIET")).json()["id"]
+    _confirm_intake(client, quiet)
     client.post(f"/api/orders/{quiet}/mandate", json=_mandate())
     client.post(f"/api/orders/{quiet}/rfq")
     blocked = client.post("/api/orders", json=_new_order("OP-BLOCKED")).json()["id"]

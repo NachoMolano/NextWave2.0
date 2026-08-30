@@ -422,12 +422,56 @@ class Market:
             confirmed_at=quote.confirmed_at,
         )
 
+    async def _report_empty_market(self, order: Order, comparison: Comparison) -> Approval:
+        """Nobody quoted. Tell a person, and put the order back where it can be re-dialled.
+
+        Deliberately not an AWARD_APPROVAL: the portal labels those "Approve the award", and
+        approving one with no winner is refused -- a button whose only outcome is a refusal.
+        The order returns to RECEIVED, whose next action with a mandate already granted is
+        "Open the market", which is the thing that actually needs doing.
+        """
+        approval = Approval(
+            order_id=order.id,
+            kind=ApprovalKind.ESCALATION,
+            reason=ApprovalReason.NO_ELIGIBLE_CANDIDATE,
+            context={
+                **comparison.model_dump(mode="json"),
+                "detail": "the market closed with no quote from any carrier",
+            },
+            raised_at=self._now(),
+        )
+        approval_id = await self._store.raise_approval(approval)
+        await self._store.append_event(
+            EventRow(
+                order_id=order.id,
+                type="rfq.no_quotes",
+                payload={"mandate_version": order.mandate_version},
+                idempotency_key=f"rfq-no-quotes:{order.id}:{order.mandate_version}",
+            )
+        )
+        await self._store.set_order_status(order.id, OrderStatus.RECEIVED)
+        return approval.model_copy(update={"id": approval_id})
+
     async def _carrier_name(self, carrier_id: str) -> str:
         carrier = await self._store.carrier(carrier_id)
         return carrier.name if carrier else carrier_id
 
     async def request_award_approval(self, order: Order, comparison: Comparison) -> Approval:
-        """Hand the ranked comparison to a human; move the order to awaiting_approval."""
+        """Hand the ranked comparison to a human; move the order to awaiting_approval.
+
+        Two different failures were being collapsed into one, and the portal showed the
+        worse-looking of the pair. A market where carriers quoted and none cleared the
+        ceiling is a real comparison: a person can raise the cap, pick differently, or walk.
+        A market where nobody quoted at all is not a comparison -- OP-MIA-0002 reached the
+        Comparison stage with three unanswered calls, an empty table, and an Approve button
+        that could only ever refuse itself.
+
+        So an empty market is an escalation, not an award, and it leaves the order where its
+        next action is to open the market again rather than to approve nothing.
+        """
+        if not comparison.entries:
+            return await self._report_empty_market(order, comparison)
+
         approval = Approval(
             order_id=order.id,
             kind=ApprovalKind.AWARD_APPROVAL,

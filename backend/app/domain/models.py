@@ -162,6 +162,15 @@ class Order(BaseModel):
     weight: str | None = None
     container_number: str | None = None
 
+    # --- intake: is this real, and may it move? ---
+    #: When a *person* confirmed the container is released and available to move. Until it is
+    #: set, no mandate may be granted and no carrier may be dialled. Never inferred from
+    #: discharge and never taken from a carrier's claim: the terminal releasing a box and
+    #: somebody checking that it did are different facts, and only the second is evidence.
+    released_at: datetime | None = None
+    released_by: str | None = None
+    release_note: str | None = None
+
     # Demurrage. Nobody decides when it starts; discharge starts it.
     discharged_at: datetime | None = None
     free_days: int | None = None
@@ -192,6 +201,29 @@ class Order(BaseModel):
     @property
     def has_mandate(self) -> bool:
         return self.mandate_version > 0 and self.cap is not None
+
+    @property
+    def is_released(self) -> bool:
+        """Has a person confirmed this container may move?
+
+        The gate the whole intake stage exists to hold. Kept as a property rather than read
+        as a column at each call site so there is one definition of released, and so a future
+        release that needs two conditions changes here and nowhere else.
+        """
+        return self.released_at is not None
+
+    @property
+    def has_clock(self) -> bool:
+        """Is there a deadline that makes urgency real?
+
+        ``last_free_day`` is the import clock (demurrage starts at discharge and nobody
+        chooses when); ``delivery_deadline`` carries the export one (the cargo cutoff at the
+        port). One or the other must exist before a mandate is granted: a ceiling with no
+        clock is an authority to negotiate with no reason to hurry, and the agent's strongest
+        honest lever -- "I can move the pickup if you can move the rate" -- is exactly the
+        days of free time it does not have.
+        """
+        return self.last_free_day is not None or self.delivery_deadline is not None
 
     def mandate(self) -> Mandate:
         """Project the mandate columns into the value ``policy/`` evaluates against.

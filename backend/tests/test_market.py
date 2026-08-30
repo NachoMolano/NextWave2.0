@@ -362,3 +362,37 @@ async def test_a_second_award_conflicts_and_raises_an_approval() -> None:
     assert len(accepted) == 1
     assert accepted[0].id == first_id
     assert any(a.reason is ApprovalReason.CONFLICTING_INFORMATION for a in store.approvals.values())
+
+
+async def test_a_market_nobody_quoted_is_an_escalation_not_an_award() -> None:
+    """OP-MIA-0002 reached the Comparison stage with three unanswered calls.
+
+    The table was empty, the recommendation was "no eligible candidate", and the only
+    button offered was Approve -- which could never do anything but refuse itself. An empty
+    market is not a comparison a person can decide; it is a market that has to run again.
+    """
+    store, market = seeded()
+
+    approval = await market.request_award_approval(order(), await market.rank(order()))
+
+    assert approval.kind is ApprovalKind.ESCALATION
+    assert approval.reason is ApprovalReason.NO_ELIGIBLE_CANDIDATE
+    saved = await store.order("order-1")
+    assert saved is not None
+    # Back where the next action is "open the market", not "approve nothing".
+    assert saved.status is OrderStatus.RECEIVED
+
+
+async def test_quotes_that_all_miss_the_ceiling_still_reach_a_person_as_an_award() -> None:
+    """The other half of the pair. Carriers quoted and none cleared the cap: that is a real
+    comparison, and raising the ceiling or walking away are both decisions a person makes
+    from it."""
+    store, market = seeded()
+    await store.add_quote(quote("carrier-1", 1_500_000))
+
+    approval = await market.request_award_approval(order(), await market.rank(order()))
+
+    assert approval.kind is ApprovalKind.AWARD_APPROVAL
+    assert approval.reason is ApprovalReason.NO_ELIGIBLE_CANDIDATE
+    saved = await store.order("order-1")
+    assert saved is not None and saved.status is OrderStatus.AWAITING_APPROVAL
