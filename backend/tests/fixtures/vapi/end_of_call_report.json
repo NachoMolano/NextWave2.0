@@ -1,0 +1,18 @@
+{
+  "_status": "PROVISIONAL - secondsFromStart and stereoRecordingUrl are UNVERIFIED guesses",
+  "message": {
+    "type": "end-of-call-report",
+    "endedReason": "customer-ended-call",
+    "call": { "id": "vapi-call-provisional-1", "type": "outboundPhoneCall" },
+    "artifact": {
+      "recordingUrl": "https://storage.vapi.ai/provisional.wav",
+      "stereoRecordingUrl": "https://storage.vapi.ai/provisional-stereo.wav",
+      "transcript": "AI: Hi, this is Volta from Pacific Textiles...",
+      "messages": [
+        { "role": "assistant", "message": "Hi, this is Volta from Pacific Textiles.", "secondsFromStart": 0.4 },
+        { "role": "user", "message": "Eight thousand five hundred dollars.", "secondsFromStart": 11.2 }
+      ]
+    },
+    "cost": 0.0731
+  }
+}

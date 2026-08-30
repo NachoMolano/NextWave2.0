@@ -1,0 +1,23 @@
+{
+  "_status": "PROVISIONAL - written from docs.vapi.ai/tools/custom-tools, not captured",
+  "message": {
+    "type": "tool-calls",
+    "call": { "id": "vapi-call-provisional-1" },
+    "toolCallList": [
+      {
+        "id": "toolu_01DTPAzUm5Gk3zxrpJ969oMF",
+        "name": "propose_quote",
+        "arguments": {
+          "components": [
+            { "name": "linehaul", "amount": "8500", "currency": "USD" }
+          ],
+          "cost_is_final": true,
+          "pickup_date": "2026-09-03",
+          "equipment": "40-foot container chassis",
+          "valid_until": "2026-09-01T18:00:00Z",
+          "claimed_identity": "Rafael from Transportes del Pacifico"
+        }
+      }
+    ]
+  }
+}

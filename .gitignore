@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Volta ---
+# Call evidence never enters version control: recordings and transcripts are personal data
+# and the repo is public.
+*.wav
+*.mp3
+recordings/
+transcripts/
+
+# Supabase CLI scratch state, not project state.
+supabase/.temp/
+supabase/.branches/
