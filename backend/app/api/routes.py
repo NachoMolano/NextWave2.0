@@ -10,9 +10,9 @@ policy: there must be no way to write state here that skips the boundary.
 POST /api/orders/{id}/mandate is the exception, and deliberately so. It writes straight to
 store/, because tools/ exists to gate *the model*: it evaluates a proposal that arrived in a
 conversation against an authority granted elsewhere. A mandate is that authority. There is no
-proposal to evaluate and no counterparty involved -- an authenticated human is the source of
-the permission -- so routing it through the proposal boundary would not add a check, it would
-only blur where authority comes from. Nothing reachable from a phone call can reach this path.
+proposal to evaluate and no counterparty involved -- the portal is the source of the
+permission -- so routing it through the proposal boundary would not add a check, it would only
+blur where authority comes from. Nothing reachable from a phone call can reach this path.
 
 The router is a factory rather than a module of globals so that tests build it over
 InMemoryStore with no network, and so main.py stays a composition root that names its
@@ -29,10 +29,9 @@ function still stubbed by its owner answer 501 and name the owner. OWNER: Track 
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from hmac import compare_digest
 from typing import Annotated, Protocol
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.schemas import (
     ApprovalDecisionRequest,
@@ -96,8 +95,8 @@ Sweep = Callable[[], Awaitable[list[str]]]
 
 #: Placing the calls a plan describes. Injected for the same reason as ``sweep``: ``api`` may
 #: not import ``vapi`` under the layering contract, and it should not -- the portal is the
-#: authenticated human's surface and the phone is a stranger's. main.py is the one place
-#: allowed to know both, so it hands this down with the placer already bound.
+#: user-operated surface and the phone is a stranger's. main.py is the one place allowed to
+#: know both, so it hands this down with the placer already bound.
 Dialler = Callable[[list[DialPlan]], Awaitable[object]]
 
 
@@ -133,17 +132,11 @@ def create_api_router(
     now: Callable[[], datetime],
     settings: Settings,
 ) -> APIRouter:
-    async def authenticate(authorization: Annotated[str | None, Header()] = None) -> str:
-        token = settings.portal_api_token.strip()
-        actor = settings.portal_manager_identity.strip()
-        if not token or not actor:
-            raise HTTPException(status_code=503, detail="portal authentication is not configured")
-        scheme, separator, credential = (authorization or "").partition(" ")
-        if not separator or scheme.lower() != "bearer" or not compare_digest(credential, token):
-            raise HTTPException(status_code=401, detail="unauthorized")
-        return actor
+    async def portal_actor() -> str:
+        """The unauthenticated demo portal still records a stable audit actor."""
+        return settings.portal_manager_identity.strip() or "portal-operator"
 
-    router = APIRouter(tags=["portal"], dependencies=[Depends(authenticate)])
+    router = APIRouter(tags=["portal"])
 
     async def _load(order_id: str) -> Order:
         with _guard():
@@ -209,7 +202,7 @@ def create_api_router(
 
     @router.post("/orders/{order_id}/mandate", response_model=OrderAggregate)
     async def set_mandate(
-        order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(authenticate)]
+        order_id: str, body: SetMandateRequest, actor: Annotated[str, Depends(portal_actor)]
     ) -> OrderAggregate:
         """The only price-cap writer in the system.
 
@@ -221,8 +214,10 @@ def create_api_router(
         if order.mandate_version != body.expected_version:
             raise HTTPException(
                 status_code=409,
-                detail=(f"stale mandate version {body.expected_version}; "
-                        f"current version is {order.mandate_version}"),
+                detail=(
+                    f"stale mandate version {body.expected_version}; "
+                    f"current version is {order.mandate_version}"
+                ),
             )
         updated = order.model_copy(
             update={
@@ -301,7 +296,7 @@ def create_api_router(
     async def decide_approval(
         approval_id: str,
         body: ApprovalDecisionRequest,
-        actor: Annotated[str, Depends(authenticate)],
+        actor: Annotated[str, Depends(portal_actor)],
     ) -> Approval:
         """Steps 9 and 10. Approving an award is what engages the single-award lock."""
         with _guard():

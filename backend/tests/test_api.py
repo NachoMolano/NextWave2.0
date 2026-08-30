@@ -38,7 +38,6 @@ from app.store import StoreUnavailable
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
-AUTH = {"Authorization": "Bearer portal-test-token"}
 
 
 def _now() -> datetime:
@@ -153,6 +152,7 @@ def build(
     market: FakeMarket | None = None,
     sweep: FakeSweep | None = None,
     dial: FakeDialler | None = None,
+    settings: Settings | None = None,
 ) -> tuple[TestClient, PortalMemoryStore, FakeMarket, FakeSweep, FakeDialler]:
     store = store or PortalMemoryStore()
     market = market or FakeMarket()
@@ -166,14 +166,14 @@ def build(
             sweep=sweep,
             dial=dial,
             now=_now,
-            settings=Settings(
-                portal_api_token="portal-test-token",
+            settings=settings
+            or Settings(
                 portal_manager_identity="ops@volta.test",
             ),
         ),
         prefix="/api",
     )
-    return TestClient(app, headers=AUTH), store, market, sweep, dial
+    return TestClient(app), store, market, sweep, dial
 
 
 def _new_order(reference: str = "OP-MZO-0001") -> dict[str, object]:
@@ -523,9 +523,13 @@ def test_unimplemented_renegotiation_is_not_advertised() -> None:
     assert response.status_code == 404
 
 
-def test_portal_requires_a_bearer_token() -> None:
-    client, _, _, _, _ = build()
-    assert client.get("/api/orders", headers={"Authorization": "Bearer wrong"}).status_code == 401
+def test_portal_does_not_require_a_bearer_token() -> None:
+    client, _, _, _, _ = build(settings=Settings(environment="demo"))
+
+    assert client.get("/api/orders").status_code == 200
+
+    production, _, _, _, _ = build(settings=Settings(environment="production"))
+    assert production.get("/api/orders").status_code == 200
 
 
 def test_an_unconfigured_store_is_503_not_a_crash() -> None:

@@ -54,10 +54,9 @@ class Settings(BaseSettings):
     manager_email: str = ""
     manager_whatsapp: str = ""
 
-    # --- Human portal authority ---
-    #: Demo-safe authentication for every /api route. The token identifies exactly one
-    #: trusted manager; request bodies never get to choose their own audit actor.
-    portal_api_token: str = ""
+    # --- Portal audit identity ---
+    #: The portal is deliberately unauthenticated for this demo. This value is recorded as
+    #: the server-side actor for mandate and approval writes.
     portal_manager_identity: str = ""
 
     # --- Escalation ---
@@ -90,7 +89,6 @@ class Settings(BaseSettings):
     #: Recording is opt-in. Enabling it requires an approved consent/retention process.
     recording_enabled: bool = False
     recording_consent_notice: str = ""
-    production_tenant_auth_ready: bool = False
     production_retention_ready: bool = False
     production_provider_deletion_ready: bool = False
     production_legal_review_ready: bool = False
@@ -106,14 +104,11 @@ class Settings(BaseSettings):
             "VAPI_SERVER_SECRET": self.vapi_server_secret,
             "SUPABASE_URL": self.supabase_url,
             "SUPABASE_SECRET_KEY": self.supabase_secret_key,
-            "PORTAL_API_TOKEN": self.portal_api_token,
-            "PORTAL_MANAGER_IDENTITY": self.portal_manager_identity,
         }
         missing = [name for name, value in required.items() if not value.strip()]
         if self.recording_enabled and not self.recording_consent_notice.strip():
             missing.append("RECORDING_CONSENT_NOTICE")
         gates = {
-            "PRODUCTION_TENANT_AUTH_READY": self.production_tenant_auth_ready,
             "PRODUCTION_RETENTION_READY": self.production_retention_ready,
             "PRODUCTION_PROVIDER_DELETION_READY": self.production_provider_deletion_ready,
             "PRODUCTION_LEGAL_REVIEW_READY": self.production_legal_review_ready,

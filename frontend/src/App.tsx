@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, hasPortalToken, setPortalToken, voltaApi } from './api'
+import { ApiError, voltaApi } from './api'
 import type {
   Approval,
   CallDetail,
@@ -99,37 +99,6 @@ function humanise(value: string): string {
 
 export default function App() {
   const [route, navigate] = useRoute()
-  const [authenticated, setAuthenticated] = useState(hasPortalToken)
-  const [token, setToken] = useState('')
-
-  if (!authenticated) {
-    return (
-      <main className="content-shell">
-        <section className="surface action-panel">
-          <p className="eyebrow">Trusted manager access</p>
-          <h1>Sign in to the control tower</h1>
-          <p>The token stays in this browser tab and is never embedded in the application.</p>
-          <input
-            className="field"
-            type="password"
-            value={token}
-            placeholder="Manager bearer token"
-            onChange={(event) => setToken(event.target.value)}
-          />
-          <button
-            className="primary-button"
-            disabled={!token.trim()}
-            onClick={() => {
-              setPortalToken(token.trim())
-              setAuthenticated(true)
-            }}
-          >
-            Continue
-          </button>
-        </section>
-      </main>
-    )
-  }
 
   return (
     <div className="app-shell">
