@@ -44,6 +44,7 @@ from app.api.schemas import (
     EmailTestRequest,
     MandateView,
     NewOrderRequest,
+    NotificationDelivery,
     OrderAggregate,
     OrderSummary,
     SecurityModeRequest,
@@ -102,6 +103,10 @@ class PortalStore(Store, Protocol):
     async def save_company_profile(self, values: dict[str, object]) -> dict[str, object]: ...
 
     async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool: ...
+
+    async def notifications_for(
+        self, *, order_id: str | None = None, approval_id: str | None = None
+    ) -> list[dict[str, object]]: ...
 
 
 #: A sweep the router can trigger without importing jobs. Returns the call ids placed.
@@ -450,6 +455,15 @@ def create_api_router(
         """The one human inbox: awards, escalations and incidents on one screen."""
         with _guard():
             return await store.open_approvals(order_id)
+
+    @router.get("/notifications", response_model=list[NotificationDelivery])
+    async def list_notifications(
+        order_id: str | None = Query(default=None),
+        approval_id: str | None = Query(default=None),
+    ) -> list[dict[str, object]]:
+        """Delivery evidence: provider id means accepted, error explains a failure."""
+        with _guard():
+            return await store.notifications_for(order_id=order_id, approval_id=approval_id)
 
     @router.post("/approvals/{approval_id}/decision", response_model=Approval)
     async def decide_approval(

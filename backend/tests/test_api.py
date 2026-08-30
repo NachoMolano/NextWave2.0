@@ -32,11 +32,15 @@ from app.domain import (
     Commitment,
     Comparison,
     DecisionRow,
+    DeliveryResult,
+    DeliveryStatus,
     DialPlan,
     EventRow,
     Money,
+    NotificationChannel,
     Order,
     OrderStatus,
+    OutboundMessage,
     QuoteRow,
 )
 from app.store import RowNotFound, StoreUnavailable
@@ -1201,3 +1205,45 @@ def test_email_composer_is_not_exposed_outside_local_mode() -> None:
         ).status_code
         == 404
     )
+
+
+async def test_notification_endpoint_exposes_provider_delivery_evidence() -> None:
+    client, store, _, _, _ = build()
+    message = OutboundMessage(
+        channel=NotificationChannel.EMAIL,
+        to_address="manager@example.com",
+        subject="Award approval required",
+        body="Review in dashboard",
+        order_id="order-1",
+        approval_id="approval-1",
+    )
+    await store.record_delivery(
+        message,
+        DeliveryResult(
+            status=DeliveryStatus.SENT,
+            provider_message_id="resend-email-123",
+            sent_at=NOW,
+        ),
+    )
+
+    response = client.get("/api/notifications?approval_id=approval-1")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "notification-1",
+            "order_id": "order-1",
+            "call_id": None,
+            "commitment_id": None,
+            "approval_id": "approval-1",
+            "channel": "email",
+            "to_address": "manager@example.com",
+            "subject": "Award approval required",
+            "body": "Review in dashboard",
+            "status": "sent",
+            "provider_message_id": "resend-email-123",
+            "error": None,
+            "sent_at": NOW.isoformat().replace("+00:00", "Z"),
+            "created_at": NOW.isoformat().replace("+00:00", "Z"),
+        }
+    ]

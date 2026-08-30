@@ -890,3 +890,18 @@ class SupabaseStore:
         if created is None:
             raise StoreError("insert into notifications returned no row")
         return str(created["id"])
+
+    async def notifications_for(
+        self, *, order_id: str | None = None, approval_id: str | None = None
+    ) -> list[dict[str, object]]:
+        query = self._db.table("notifications").select(
+            "id,order_id,call_id,commitment_id,approval_id,channel,to_address,subject,body,"
+            "status,provider_message_id,error,sent_at,created_at"
+        )
+        if order_id is not None:
+            query = query.eq("order_id", order_id)
+        if approval_id is not None:
+            query = query.eq("approval_id", approval_id)
+        with _translate():
+            response = await query.order("created_at", desc=True).execute()
+        return [dict(row) for row in _rows(response)]
