@@ -241,6 +241,10 @@ class OrderAggregate(BaseModel):
     calls: list[CallRecord]
     commitment: Commitment | None
     approvals: list[Approval]
+    #: Every carrier named anywhere on this screen, so a quote, a call and an escalation can
+    #: each say who they are about. Quotes carry a ``carrier_id`` and nothing else, and a
+    #: column of prices with no names is not a comparison -- it is four numbers.
+    carriers: list[Carrier]
 
 
 class CallDetail(BaseModel):

@@ -287,6 +287,8 @@ export interface OrderAggregate {
   calls: CallRecord[]
   commitment: Commitment | null
   approvals: Approval[]
+  /** Every carrier named on this screen. A quote carries a carrier_id and nothing readable. */
+  carriers: Carrier[]
 }
 
 /** Keeps the losers and their reason codes. A comparison naming only the winner is not auditable. */

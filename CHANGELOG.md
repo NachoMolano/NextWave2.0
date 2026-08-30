@@ -16,6 +16,38 @@ Communal. It answers "what did the others change while I was heads down?"
 
 ---
 
+## 2026-08-30T07:36-0500 · api, tools/market, frontend · diego
+
+**Quotes now say who said them.** `OrderAggregate` gained a `carriers` list -- every carrier
+named by a quote or a call on that screen, resolved once per distinct id. A `QuoteRow` carries
+a `carrier_id` and nothing a person can read, so the market panel was a column of prices with
+no way to tell whose was whose, and no way to see that two of them came from the same carrier
+an hour apart. Quote cards and call rows are now titled by carrier, and quotes are grouped by
+carrier rather than by arrival.
+→ Affects: anyone binding to `GET /api/orders/{id}`. Additive; existing fields unchanged.
+
+**`Market.request_award_approval` closes what the comparison answers.** Two things piled up in
+the human inbox and meant nothing once the market closed: one escalation per refused quote
+(the same carrier, price and reason code the comparison now lists, where something can be done
+about it), and an earlier award request from a ranking that has been superseded. Both are now
+resolved as `handled`, decided by `system:comparison`, with a note naming the approval that
+answered them. Nothing is deleted and nothing that is not about a quote is touched -- an
+incident, an identity failure and a direct request stay open, because the comparison says
+nothing about them.
+→ Affects: Track C. `open_approvals` returns fewer rows after a market closes; an inbox count
+that used to grow by one per over-cap quote now shows one decision.
+
+**The portal stopped offering Approve on things it cannot approve.** Approving an escalation
+resolved the row and granted nothing, which read -- next to a card saying *outside mandate* --
+as an offer to authorize the over-cap quote. Rail cards now say what they are about in plain
+language and offer *Mark handled*, plus *Raise the ceiling* where that is the actual remedy.
+Awarding lives only on the comparison, where the action sits on the carrier it acts on and
+always carries a `quote_id`. The comparison is now chosen as the newest ranking with entries
+in it: `find` took the first award approval of any shape, so one empty ranking left over from
+a market where nobody quoted suppressed the decision surface entirely and dropped every
+approval into the rail.
+→ Affects: nobody. Frontend only.
+
 ## 2026-08-30T06:18-0500 · api, frontend · nacho
 
 **The operator could not say when.** The mandate form asked for a ceiling and a currency and

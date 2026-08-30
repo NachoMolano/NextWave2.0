@@ -545,7 +545,13 @@ function OrderDetail({
   if (error) return <ErrorState message={error} onRetry={load} />
   if (!data) return <Loading what="the operation" />
 
-  const { order, mandate, demurrage, quotes, calls, commitment, approvals } = data
+  const { order, mandate, demurrage, quotes, calls, commitment, approvals, carriers } = data
+
+  // A quote row carries a carrier_id and nothing a person can read. Resolved once here so a
+  // quote, a call and an escalation all name the same counterparty the same way.
+  const carrierName = (carrierId: string) =>
+    carriers.find((c) => c.id === carrierId)?.name ?? 'Carrier not on file'
+  const quoteById = new Map(quotes.map((q) => [String(q.id), q]))
 
   const openMarket = () =>
     act('The market is open. Carriers are being dialled.', () => voltaApi.startRfq(orderId))
@@ -572,14 +578,23 @@ function OrderDetail({
   // decision surface rather than a rail card. Everything else waiting on a person -- an
   // escalation, an incident -- stays in the rail: those are notices, not a choice between
   // priced options.
-  const awardApproval = approvals.find(
-    (a) => a.kind === 'award_approval' && approvalComparison(a) !== null,
-  )
-  const awardComparison = awardApproval ? approvalComparison(awardApproval) : null
+  //
+  // The newest ranking with something in it wins. `find` used to take the first award
+  // approval of any shape, so one empty ranking left over from a market where nobody quoted
+  // suppressed the comparison entirely: the decision surface vanished and every approval,
+  // award included, fell into the rail as an Approve button with no carrier attached. That
+  // is the screen this is written against.
   const awardDecision =
-    awardApproval && awardComparison && awardComparison.entries.length > 0
-      ? { approval: awardApproval, comparison: awardComparison }
-      : null
+    approvals
+      .filter((a) => a.kind === 'award_approval')
+      .map((approval) => ({ approval, comparison: approvalComparison(approval) }))
+      .filter(
+        (candidate): candidate is { approval: Approval; comparison: Comparison } =>
+          candidate.comparison !== null && candidate.comparison.entries.length > 0,
+      )
+      .sort((a, b) =>
+        String(b.approval.raised_at ?? '').localeCompare(String(a.approval.raised_at ?? '')),
+      )[0] ?? null
   const railApprovals = approvals.filter((a) => a.id !== awardDecision?.approval.id)
 
   // The panel's own button is the only one wired for actions we can actually perform here.
@@ -670,6 +685,7 @@ function OrderDetail({
 
           <MarketPanel
             quotes={quotes}
+            carrierName={carrierName}
             mandateGranted={mandate.is_granted}
             marketOpen={order.status !== 'received'}
             busy={busy}
@@ -689,7 +705,12 @@ function OrderDetail({
             ) : (
               <div className="compact-calls">
                 {calls.map((call) => (
-                  <CallRow key={call.id} call={call} onOpen={() => onOpenCall(String(call.id))} />
+                  <CallRow
+                    key={call.id}
+                    call={call}
+                    carrier={call.carrier_id ? carrierName(call.carrier_id) : null}
+                    onOpen={() => onOpenCall(String(call.id))}
+                  />
                 ))}
               </div>
             )}
@@ -709,22 +730,34 @@ function OrderDetail({
           {railApprovals.length > 0 && (
             <section className="surface assignment-card">
               <p className="eyebrow">Waiting on a person</p>
-              <h2>{railApprovals.length} to decide</h2>
-              {railApprovals.map((approval) => (
-                <ApprovalCard
-                  key={approval.id}
-                  approval={approval}
-                  busy={busy}
-                  onDecide={(status) =>
-                    act(`Approval ${status}.`, () =>
-                      voltaApi.decideApproval(String(approval.id), {
-                        status,
-                        note: null,
-                      }),
-                    )
-                  }
-                />
-              ))}
+              {/* Not "to decide". Awarding is decided on the comparison; what is left here is
+                  things a person needs to have seen, and a count promising decisions next to
+                  a column of notices is how the rail read as nonsense in the first place. */}
+              <h2>{railApprovals.length} to acknowledge</h2>
+              {railApprovals.map((approval) => {
+                const about =
+                  typeof approval.context.quote_id === 'string'
+                    ? (quoteById.get(approval.context.quote_id) ?? null)
+                    : null
+                return (
+                  <ApprovalCard
+                    key={approval.id}
+                    approval={approval}
+                    quote={about}
+                    carrier={about ? carrierName(about.carrier_id) : null}
+                    busy={busy}
+                    onRaiseCeiling={() => setMandateFormOpen(true)}
+                    onHandle={() =>
+                      act('Marked handled. Nothing was authorized.', () =>
+                        voltaApi.decideApproval(String(approval.id), {
+                          status: 'handled',
+                          note: null,
+                        }),
+                      )
+                    }
+                  />
+                )
+              })}
             </section>
           )}
 
@@ -1015,12 +1048,15 @@ function MandatePanel({
 
 function MarketPanel({
   quotes,
+  carrierName,
   mandateGranted,
   marketOpen,
   busy,
   onStart,
 }: {
   quotes: QuoteRow[]
+  /** Who said it. Without this the market is a column of prices nobody can act on. */
+  carrierName: (carrierId: string) => string
   mandateGranted: boolean
   /** Carriers have been dialled for this order. Nothing to do but wait for them to answer. */
   marketOpen: boolean
@@ -1029,8 +1065,15 @@ function MarketPanel({
 }) {
   // Superseded rows are shown, never hidden: they said 8,500 and then they said 9,200, and
   // both were said. A market that displays only the current number has deleted the evidence.
-  const live = quotes.filter((q) => q.status !== 'superseded')
-  const superseded = quotes.filter((q) => q.status === 'superseded')
+  //
+  // Grouped by carrier rather than by arrival, because the question this panel answers is
+  // "what did each carrier offer" -- and two prices from the same carrier next to each other
+  // is the renegotiation, visible.
+  const byCarrier = (a: QuoteRow, b: QuoteRow) =>
+    carrierName(a.carrier_id).localeCompare(carrierName(b.carrier_id)) ||
+    a.anchor_ms - b.anchor_ms
+  const live = quotes.filter((q) => q.status !== 'superseded').sort(byCarrier)
+  const superseded = quotes.filter((q) => q.status === 'superseded').sort(byCarrier)
 
   return (
     <section className="surface">
@@ -1069,7 +1112,7 @@ function MarketPanel({
       {live.length > 0 && (
         <div className="offer-list">
           {live.map((quote) => (
-            <QuoteCard key={quote.id} quote={quote} />
+            <QuoteCard key={quote.id} quote={quote} carrier={carrierName(quote.carrier_id)} />
           ))}
         </div>
       )}
@@ -1081,7 +1124,7 @@ function MarketPanel({
           </p>
           <div className="offer-list">
             {superseded.map((quote) => (
-              <QuoteCard key={quote.id} quote={quote} />
+              <QuoteCard key={quote.id} quote={quote} carrier={carrierName(quote.carrier_id)} />
             ))}
           </div>
         </>
@@ -1090,12 +1133,14 @@ function MarketPanel({
   )
 }
 
-function QuoteCard({ quote }: { quote: QuoteRow }) {
+function QuoteCard({ quote, carrier }: { quote: QuoteRow; carrier: string }) {
   return (
     <article className={quote.status === 'accepted' ? 'offer-card offer-recommended' : 'offer-card'}>
       <div className="offer-heading">
         <div>
-          <p className="eyebrow">Quote</p>
+          {/* The carrier, not the word "Quote". Under a heading that already says Quotes,
+              the only thing this line can usefully carry is whose number it is. */}
+          <p className="eyebrow">{carrier}</p>
           <h3>{formatMoney(quote.amount)}</h3>
         </div>
         {quote.status === 'accepted' && <span className="recommendation">Awarded</span>}
@@ -1501,51 +1546,81 @@ function ComparisonPanel({
 /* --------------------------------------------------------------- approvals */
 
 
+/** Plain language for what is waiting. The reason code is the audit record; this is the
+ *  sentence an operator can act on, and the two are not the same thing. */
+const ESCALATION_COPY: Record<string, string> = {
+  outside_mandate: 'A carrier quoted above the ceiling',
+  policy_failure: 'A quote could not be authorized',
+  identity_unverified: 'The caller could not prove who they were',
+  direct_request: 'The caller asked for a person',
+  conflicting_information: 'What was said contradicts what we hold',
+  deadline_breach: 'The deadline passed with nothing underway',
+  carrier_reported_incident: 'A carrier reported an incident',
+  no_eligible_candidate: 'The market produced nothing to award',
+  award_selected: 'A ranking is waiting on the comparison above',
+}
+
+/**
+ * One notice in the rail. A notice, not a decision.
+ *
+ * This card used to offer Approve and Reject on every row, which read -- next to an
+ * escalation saying *outside mandate* -- as an offer to authorize the over-cap quote. It was
+ * not: approving an escalation resolves the row and grants nothing, and a button whose label
+ * promises authority it does not carry is worse than no button. The only thing a person can
+ * do to an escalation from here is say they have seen it.
+ *
+ * Awarding lives on the comparison, where the options are priced and the action sits on the
+ * carrier it acts on. An award request that reaches the rail is one with no comparison left
+ * in it, so it offers the same acknowledgement and no more.
+ */
 function ApprovalCard({
   approval,
+  quote,
+  carrier,
   busy,
-  onDecide,
+  onHandle,
+  onRaiseCeiling,
 }: {
   approval: Approval
+  /** The quote this is about, when it is about one. */
+  quote: QuoteRow | null
+  carrier: string | null
   busy: boolean
-  onDecide: (status: 'approved' | 'rejected') => void
+  onHandle: () => void
+  onRaiseCeiling: () => void
 }) {
-  const comparison = approval.kind === 'award_approval' ? approvalComparison(approval) : null
+  const reasonCode =
+    typeof approval.context.reason_code === 'string' ? approval.context.reason_code : null
+  const detail = typeof approval.context.detail === 'string' ? approval.context.detail : null
+
   return (
     <div className="snapshot">
-      <strong>{humanise(approval.kind)}</strong>
-      <span>{humanise(approval.reason)}</span>
-      <small>Raised {formatDate(approval.raised_at)}</small>
-      {comparison && (
-        <div className="approval-comparison">
-          <strong>Policy-ranked carrier comparison</strong>
-          {comparison.entries.map((entry) => (
-            <div
-              className={entry.is_winner ? 'approval-option approval-option-winner' : 'approval-option'}
-              key={entry.quote_id}
-            >
-              <span>{entry.is_winner ? 'Recommended · ' : ''}{entry.carrier_name}</span>
-              <b>{formatMoney(entry.amount)}</b>
-              <small>{humanise(entry.outcome)} · {humanise(entry.reason_code)} · pickup {formatDate(entry.pickup_at)}</small>
-            </div>
-          ))}
-          <small>Mandate version {comparison.mandate_version} · recommendation is revalidated when approved</small>
-        </div>
+      <strong>{ESCALATION_COPY[approval.reason] ?? humanise(approval.reason)}</strong>
+      {quote && (
+        <span>
+          {carrier ?? 'Carrier not on file'} · {formatMoney(quote.amount)} · pickup{' '}
+          {formatDate(quote.pickup_at)}
+        </span>
       )}
+      {reasonCode && <span>{REFUSAL_COPY[reasonCode] ?? humanise(reasonCode)}</span>}
+      {detail && <span>{detail}</span>}
+      <small>
+        {humanise(approval.kind)} · raised {formatDate(approval.raised_at)}
+      </small>
+      <p className="decision-context">
+        {approval.kind === 'award_approval'
+          ? 'This ranking has no carrier left to award. Reopen the market to quote again.'
+          : 'Acknowledging this changes no authority. Awarding happens on the comparison; ' +
+            'raising the ceiling is its own act, with its own version.'}
+      </p>
       <div className="dialog-actions">
-        <button
-          className="secondary-button"
-          disabled={busy}
-          onClick={() => onDecide('rejected')}
-        >
-          Reject
-        </button>
-        <button
-          className="primary-button"
-          disabled={busy}
-          onClick={() => onDecide('approved')}
-        >
-          Approve
+        {approval.reason === 'outside_mandate' && (
+          <button className="secondary-button" disabled={busy} onClick={onRaiseCeiling}>
+            Raise the ceiling
+          </button>
+        )}
+        <button className="secondary-button" disabled={busy} onClick={onHandle}>
+          Mark handled
         </button>
       </div>
     </div>
@@ -1673,14 +1748,24 @@ function CommitmentCard({ commitment }: { commitment: Commitment | null }) {
 
 /* ------------------------------------------------------------------- calls */
 
-function CallRow({ call, onOpen }: { call: CallRecord; onOpen: () => void }) {
+function CallRow({
+  call,
+  carrier,
+  onOpen,
+}: {
+  call: CallRecord
+  /** Null when the number is not on file -- which is itself information about the caller. */
+  carrier: string | null
+  onOpen: () => void
+}) {
+  const number = call.to_number ?? call.from_number ?? 'unknown number'
   return (
     <button className="call-row" onClick={onOpen}>
       <div>
         <strong>
-          {humanise(String(call.phase))} · {call.direction}
+          {carrier ?? 'Not on file'} · {humanise(String(call.phase))}
         </strong>
-        <small>{call.to_number ?? call.from_number ?? 'unknown number'}</small>
+        <small>{number}</small>
       </div>
       <div className="call-meta">
         <span className={statusClass(call.status)}>{humanise(call.status)}</span>

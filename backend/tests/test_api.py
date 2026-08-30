@@ -34,8 +34,10 @@ from app.domain import (
     DecisionRow,
     DialPlan,
     EventRow,
+    Money,
     Order,
     OrderStatus,
+    QuoteRow,
 )
 from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore, RecordingNotifier
@@ -117,6 +119,7 @@ class FakeMarket:
     ) -> None:
         self.planned: list[tuple[str, int]] = []
         self.awarded: list[str] = []
+        self.award_choices: list[str] = []
         self.failed_rounds: list[list[str]] = []
         self._planned_ids: set[str] = set()
         self.award_conflict = award_conflict
@@ -159,11 +162,14 @@ class FakeMarket:
             built_at=NOW,
         )
 
-    async def award(self, order: Order, approval: Approval) -> str:
+    async def award(self, order: Order, approval: Approval, chosen_quote_id: str = "") -> str:
         if self.award_conflict:
             raise AwardConflict(f"order {order.id} already awarded")
         self.awarded.append(str(order.id))
-        return "quote-1"
+        # The real one re-evaluates whichever quote it is handed. Recorded rather than
+        # ignored, because the bug this fake missed was the route never passing it.
+        self.award_choices.append(chosen_quote_id)
+        return chosen_quote_id or "quote-1"
 
     async def plan_award(self, order: Order, quote_id: str) -> list[DialPlan]:
         carrier = Carrier(id="carrier-1", name="Winner", phone="+525500000001")
@@ -328,7 +334,40 @@ def test_the_aggregate_is_one_call() -> None:
         "calls",
         "commitment",
         "approvals",
+        "carriers",
     }
+
+
+def test_the_aggregate_names_the_carrier_behind_every_quote() -> None:
+    """A quote row carries a carrier_id and nothing a person can read.
+
+    Without the names, the market panel is a column of prices with no way to tell whose is
+    whose -- four numbers, not a comparison -- and no way to see that two of them came from
+    the same carrier an hour apart.
+    """
+    client, store, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    store.add_carrier(Carrier(id="carrier-1", name="Fletes del Pacifico", phone="+523141000001"))
+    call_id = _rfq_call(store, order_id, "carrier-1")
+    asyncio.run(
+        store.add_quote(
+            QuoteRow(
+                order_id=order_id,
+                carrier_id="carrier-1",
+                call_id=call_id,
+                anchor_ms=11_200,
+                amount=Money(cents=810_000, currency="USD"),
+                pickup_at=NOW + timedelta(days=3),
+                equipment="40-foot container chassis",
+                valid_until=NOW + timedelta(hours=6),
+            )
+        )
+    )
+
+    body = client.get(f"/api/orders/{order_id}").json()
+
+    assert [c["name"] for c in body["carriers"]] == ["Fletes del Pacifico"]
+    assert body["quotes"][0]["carrier_id"] == body["carriers"][0]["id"]
 
 
 def test_an_unknown_order_is_404_not_500() -> None:
@@ -589,6 +628,27 @@ def _rfq_call(store: PortalMemoryStore, order_id: str, carrier_id: str) -> str:
             )
         )
     )
+
+
+def test_the_carrier_a_person_picked_is_the_carrier_awarded() -> None:
+    """"Award this one instead" has to award that one.
+
+    The route dropped ``quote_id`` on the floor, so every approval awarded the ranked winner
+    -- including the one where an operator had just typed a reason for choosing somebody
+    else. It is not a way around the mandate: ``Market.award`` re-evaluates whatever quote it
+    is handed under current policy, and refuses it there if policy does.
+    """
+    client, store, market, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    approval_id = _award_approval(store, order_id)
+
+    response = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"status": "approved", "quote_id": "quote-7", "note": "never misses a window"},
+    )
+
+    assert response.status_code == 200
+    assert market.award_choices == ["quote-7"]
 
 
 def test_approving_an_award_releases_the_award_call() -> None:
