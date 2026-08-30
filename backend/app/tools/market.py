@@ -61,6 +61,25 @@ class Market:
         and the best so far -- so the third call negotiates with two numbers behind it and
         the first with none.
         """
+        # Claim the market before planning anything. Keyed on the mandate version, so raising
+        # the cap legitimately reopens it and a second click on the same mandate does not.
+        #
+        # This is the only thing standing between "two instances are running" and "the carrier's
+        # phone rings twice". The deadline sweep has had the same guard since it was written;
+        # this path did not, because the event was appended at the end and its answer thrown
+        # away. Two portals -- a local one and the deployed one -- pointed at one database would
+        # both have planned and both have dialled.
+        claimed = await self._store.append_event(
+            EventRow(
+                order_id=order.id,
+                type="rfq.planned",
+                payload={"mandate_version": order.mandate_version},
+                idempotency_key=f"rfq-planned:{order.id}:{order.mandate_version}",
+            )
+        )
+        if not claimed:
+            return []
+
         carriers = await self._store.carriers_for_rfq(count)
         if len(carriers) < 3:
             # The brief requires at least three. Fewer is not a thin market to push through;
@@ -109,14 +128,6 @@ class Market:
             )
 
         await self._store.set_order_status(order.id, OrderStatus.QUOTING)
-        await self._store.append_event(
-            EventRow(
-                order_id=order.id,
-                type="rfq.planned",
-                payload={"carriers": [c.id for c in carriers]},
-                idempotency_key=f"rfq-planned:{order.id}:{order.mandate_version}",
-            )
-        )
         return plans
 
     def _context_for(
