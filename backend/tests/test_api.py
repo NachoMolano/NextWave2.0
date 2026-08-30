@@ -975,16 +975,44 @@ def test_a_store_without_the_migration_says_so() -> None:
 # --------------------------------------------------------------- where are we, and whose move
 
 
-def test_a_new_order_is_waiting_on_a_person() -> None:
-    """The question a portal has to answer: is this waiting on me, or is it working?"""
+def test_a_new_order_asks_for_the_release_before_the_mandate() -> None:
+    """The question a portal has to answer: is this waiting on me, or is it working?
+
+    And the answer has to be an action the server will accept. It said "Grant a mandate" on
+    a container nobody had released, the mandate endpoint refused it, and the portal offered
+    no way to do the thing it was actually asking for.
+    """
     client, _, _, _, _ = build()
     order_id = client.post("/api/orders", json=_new_order()).json()["id"]
 
     action = client.get(f"/api/orders/{order_id}").json()["next_action"]
 
     assert action["actor"] == "operator"
+    assert action["label"] == "Confirm the release"
+    assert action["stage"] == "Intake"
+
+
+def test_a_released_order_is_then_asked_for_the_mandate() -> None:
+    client, _, _, _, _ = build()
+    order_id = client.post("/api/orders", json=_new_order()).json()["id"]
+    _confirm_intake(client, order_id)
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
     assert action["label"] == "Grant a mandate"
     assert action["stage"] == "Mandate"
+
+
+def test_a_released_order_with_no_clock_is_asked_for_one() -> None:
+    """A ceiling with no deadline is authority to negotiate with no reason to hurry."""
+    client, _, _, _, _ = build()
+    order = {**_new_order(), "free_days": None, "last_free_day": None}
+    order_id = client.post("/api/orders", json=order).json()["id"]
+    client.post(f"/api/orders/{order_id}/intake", json={"released": True})
+
+    action = client.get(f"/api/orders/{order_id}").json()["next_action"]
+
+    assert action["label"] == "Set the clock"
 
 
 def test_an_open_market_is_working_not_waiting() -> None:

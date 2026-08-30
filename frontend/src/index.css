@@ -505,3 +505,25 @@ h3 { font-size: 20px; }
   .decision-row-head { flex-direction: column; }
   .decision-price { text-align: left; }
 }
+
+/* -------------------------------------------------------------------- intake */
+/* Stage 1 is a gate. Until it is passed the mandate is refused and nobody is dialled, so
+   it is the page -- not a card in the rail beside the thing it blocks. */
+
+.intake-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0 6px; }
+.intake-facts div { display: grid; gap: 4px; }
+.intake-facts span { color: var(--ink-muted); font-size: 11px; }
+.intake-facts strong { font-size: 15px; font-weight: 500; }
+
+.intake-clock { display: grid; gap: 6px; margin-top: 16px; }
+.intake-clock label { font-size: 12px; color: var(--ink-muted); }
+.intake-clock input {
+  padding: 10px 12px; border: 1px solid var(--line); background: var(--panel);
+  font: inherit; font-size: 14px; color: var(--ink); max-width: 340px;
+}
+.intake-clock small { color: var(--ink-muted); font-size: 12px; line-height: 1.45; }
+
+/* Once released it stops being a decision and becomes a receipt. */
+.intake-confirmed { border-left: 3px solid color-mix(in srgb, var(--green, #1f6f43) 60%, transparent); }
+
+@media (max-width: 900px) { .intake-facts { grid-template-columns: repeat(2, 1fr); } }

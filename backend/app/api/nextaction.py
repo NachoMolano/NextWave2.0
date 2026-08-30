@@ -38,7 +38,7 @@ Urgency = Literal["now", "soon", "waiting", "none"]
 #: The operational story, in order. Shown as a strip so "where are we" is answered by
 #: position rather than by reading a status word and knowing what it implies.
 STAGES: tuple[str, ...] = (
-    "Received",
+    "Intake",
     "Mandate",
     "Market",
     "Comparison",
@@ -115,6 +115,37 @@ def next_action(
             ),
             actor="operator",
             urgency="now",
+        )
+
+    # Stage 1 is a gate, and it has to be the next action while it is closed. It said
+    # "Grant a mandate" on an unreleased container -- an instruction the server then refused,
+    # with no way in the portal to do the thing it actually wanted.
+    # Scoped to RECEIVED on purpose. The gate exists before the market opens; asking a
+    # delivered order to confirm its release is nonsense, and unscoped it did exactly that.
+    if order.status is OrderStatus.RECEIVED and not order.is_released:
+        return NextAction(
+            stage=STAGES[0],
+            stage_index=0,
+            label="Confirm the release",
+            detail=(
+                "Nobody has confirmed this container may move. Nothing is authorized and "
+                "nobody is dialled until someone does."
+            ),
+            actor="operator",
+            urgency=_urgency_floor(order, today, "soon"),
+        )
+
+    if order.status is OrderStatus.RECEIVED and not order.has_clock:
+        return NextAction(
+            stage=STAGES[0],
+            stage_index=0,
+            label="Set the clock",
+            detail=(
+                "No last free day and no cargo cutoff. Free time is what makes the pickup "
+                "window worth negotiating, so a mandate cannot be granted without one."
+            ),
+            actor="operator",
+            urgency="soon",
         )
 
     if order.status is OrderStatus.RECEIVED and not order.has_mandate:

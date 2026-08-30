@@ -90,6 +90,12 @@ export const voltaApi = {
     request(`/api/approvals${orderId ? `?order_id=${encodeURIComponent(orderId)}` : ''}`),
 
   /** Steps 9 and 10. Approving an award is what engages the single-award lock. */
+  confirmIntake: (orderId: string, body: import('./types').ConfirmIntakeRequest): Promise<OrderAggregate> =>
+    request(`/api/orders/${orderId}/intake`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   decideApproval: (approvalId: string, body: ApprovalDecisionRequest): Promise<Approval> =>
     request(`/api/approvals/${approvalId}/decision`, {
       method: 'POST',

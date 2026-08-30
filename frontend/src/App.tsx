@@ -11,7 +11,9 @@ import type {
   Commitment,
   Comparison,
   MandateView,
+  ConfirmIntakeRequest,
   Money,
+  Order,
   OrderAggregate,
   AnchoredNote,
   CallReport,
@@ -631,6 +633,19 @@ function OrderDetail({
 
       <div className="detail-grid">
         <div className="detail-main">
+          {order.status === 'received' && (
+            <IntakePanel
+              order={order}
+              busy={busy}
+              onConfirm={(body) =>
+                act(
+                  body.released ? 'Container confirmed released.' : 'Release withdrawn.',
+                  () => voltaApi.confirmIntake(orderId, body),
+                )
+              }
+            />
+          )}
+
           {awardDecision && (
             <ComparisonPanel
               comparison={awardDecision.comparison}
@@ -1117,7 +1132,145 @@ function QuoteCard({ quote }: { quote: QuoteRow }) {
 }
 
 
+
+/* ------------------------------------------------------------------- intake */
+
+/**
+ * Stage 1: is this real, and may it move?
+ *
+ * A gate rather than a label. Until a person confirms the container is released, no mandate
+ * may be granted and no carrier may be dialled -- and until this panel existed, the portal
+ * said "Grant a mandate", the server refused it, and there was no way to do the thing it was
+ * actually asking for.
+ *
+ * The clock lives here too. A ceiling with no deadline is authority to negotiate with no
+ * reason to hurry, so the mandate refuses without one, and this is where an operator has the
+ * last free day or the cargo cutoff in front of them.
+ */
+function IntakePanel({
+  order,
+  busy,
+  onConfirm,
+}: {
+  order: Order
+  busy: boolean
+  onConfirm: (body: ConfirmIntakeRequest) => void
+}) {
+  const released = Boolean(order.released_at)
+  const hasClock = Boolean(order.last_free_day ?? order.delivery_deadline)
+  const [lastFreeDay, setLastFreeDay] = useState(order.last_free_day ?? '')
+  const [note, setNote] = useState('')
+
+  if (released) {
+    return (
+      <section className="surface intake-confirmed">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Intake</p>
+            <h2>Released</h2>
+          </div>
+        </div>
+        <p className="decision-context">
+          Confirmed by {order.released_by ?? 'a person'} on {formatDate(order.released_at ?? null)}.
+          {order.release_note ? ` "${order.release_note}"` : ''}
+        </p>
+        <div className="decision-actions">
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => onConfirm({ released: false, note: 'Release withdrawn.' })}
+          >
+            Withdraw the release
+          </button>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="surface decision-surface">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Intake · your move</p>
+          <h2>Confirm the release</h2>
+        </div>
+      </div>
+
+      <p className="decision-context">
+        Nobody has confirmed this container may move. Nothing is authorized and nobody is
+        dialled until someone does — a release is a fact a person checks, never something we
+        infer from discharge or take from a carrier&rsquo;s word.
+      </p>
+
+      <div className="intake-facts">
+        <div>
+          <span>Container</span>
+          <strong>{order.container_number ?? 'not stated'}</strong>
+        </div>
+        <div>
+          <span>Cargo</span>
+          <strong>{order.cargo ?? 'not stated'}</strong>
+        </div>
+        <div>
+          <span>Equipment</span>
+          <strong>{order.equipment ?? 'not stated'}</strong>
+        </div>
+        <div>
+          <span>Weight</span>
+          <strong>{order.weight ?? 'not stated'}</strong>
+        </div>
+      </div>
+
+      {!hasClock && (
+        <div className="intake-clock">
+          <label htmlFor="lfd">
+            Last free day — demurrage on an import, or the cargo cutoff on an export
+          </label>
+          <input
+            id="lfd"
+            type="date"
+            value={lastFreeDay}
+            onChange={(event) => setLastFreeDay(event.target.value)}
+          />
+          <small>
+            The mandate needs a deadline. Free time is what makes the pickup window worth
+            negotiating, and without it the agent does not know it has the strongest honest
+            lever it has.
+          </small>
+        </div>
+      )}
+
+      <div className="intake-clock">
+        <label htmlFor="release-note">What was checked (optional)</label>
+        <input
+          id="release-note"
+          value={note}
+          placeholder="Released at terminal, gate pass issued"
+          onChange={(event) => setNote(event.target.value)}
+        />
+      </div>
+
+      <div className="decision-actions">
+        <button
+          className="primary-button"
+          disabled={busy || (!hasClock && lastFreeDay === '')}
+          onClick={() =>
+            onConfirm({
+              released: true,
+              note: note.trim() || null,
+              last_free_day: !hasClock && lastFreeDay ? lastFreeDay : null,
+            })
+          }
+        >
+          Confirm released
+        </button>
+      </div>
+    </section>
+  )
+}
+
 /* ------------------------------------------------------- the comparison decision */
+
 
 /** Plain language for a policy refusal. The reason code is the audit record; this is what
  *  an operator can act on. Anything unmapped falls back to the code itself rather than to

@@ -119,6 +119,9 @@ export interface OrderSummary {
 
 export interface Order {
   id: string
+  released_at?: string | null
+  released_by?: string | null
+  release_note?: string | null
   reference: string
   status: OrderStatus
   origin: string | null
@@ -323,6 +326,19 @@ export interface SetMandateRequest {
   delivery_deadline: string | null
   commitment_mode: CommitmentMode
   expected_version: number
+}
+
+export interface ConfirmIntakeRequest {
+  /** True confirms the container may move. False records a hold and clears the release. */
+  released: boolean
+  note?: string | null
+  discharged_at?: string | null
+  free_days?: number | null
+  last_free_day?: string | null
+  delivery_deadline?: string | null
+  weight?: string | null
+  container_number?: string | null
+  equipment?: string | null
 }
 
 export interface ApprovalDecisionRequest {
