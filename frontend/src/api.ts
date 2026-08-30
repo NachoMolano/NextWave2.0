@@ -1,5 +1,7 @@
 import type {
   Approval,
+  BusinessProfile,
+  BusinessProfileUpdate,
   ApprovalDecisionRequest,
   CallDetail,
   Carrier,
@@ -111,6 +113,12 @@ export const voltaApi = {
   getTrace: (callId: string): Promise<TraceRow[]> => request(`/api/calls/${callId}/trace`),
 
   listCarriers: (): Promise<Carrier[]> => request('/api/carriers'),
+
+  getProfile: (): Promise<BusinessProfile> => request('/api/profile'),
+
+  /** `updated_by` is required: the warehouse address is read out loud on a recorded line. */
+  updateProfile: (body: BusinessProfileUpdate): Promise<BusinessProfile> =>
+    request('/api/profile', { method: 'PUT', body: JSON.stringify(body) }),
 
   /** The demo button. A second press dials nothing, which is the assertion worth showing. */
   runSweep: (): Promise<SweepResult> => request('/api/jobs/sweep', { method: 'POST' }),

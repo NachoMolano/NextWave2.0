@@ -377,6 +377,34 @@ class SupabaseStore:
             res = await self._db.table("carriers").select("*").order("name").execute()
         return [_to_carrier(r) for r in _rows(res)]
 
+    async def company_profile(self) -> dict[str, Any] | None:
+        """Not on the Protocol. The single company_profile row, or None before 0003 is applied.
+
+        Returned as a mapping rather than a domain type on purpose. ``domain/`` is frozen and
+        this shape belongs to a settings screen, so the API validates it into its own model;
+        inventing a domain type for a form would put a type four tracks depend on in the way
+        of a field somebody wants to add to a page.
+        """
+        with _translate():
+            res = await self._db.table("company_profile").select("*").eq("id", 1).execute()
+        return _one(res)
+
+    async def save_company_profile(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Not on the Protocol. Update the one row and return it as stored.
+
+        No insert path: 0003 seeds the row and the primary key refuses a second one, so this
+        cannot quietly create a rival profile if the migration has not run -- it fails, which
+        is the answer you want.
+        """
+        with _translate():
+            res = (
+                await self._db.table("company_profile").update(values).eq("id", 1).execute()
+            )
+        row = _one(res)
+        if row is None:
+            raise RowNotFound("no company_profile row; apply migration 0003")
+        return row
+
     async def save_carrier(self, carrier: Carrier) -> str:
         """Not on the Protocol. Create or update by phone, for scripts/seed.py.
 

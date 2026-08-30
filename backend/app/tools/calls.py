@@ -17,7 +17,11 @@ OWNER: Track E.
 from collections.abc import Callable
 from datetime import datetime
 
+import structlog
+
 from app.domain import CallRecord, CallStatus, EventRow, Store
+
+log = structlog.get_logger(__name__)
 
 __all__ = ["CallLedger"]
 

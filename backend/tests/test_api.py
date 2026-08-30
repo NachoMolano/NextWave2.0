@@ -13,6 +13,7 @@ OWNER: Track C.
 
 import asyncio
 from datetime import UTC, date, datetime, timedelta
+from typing import ClassVar
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -34,7 +35,7 @@ from app.domain import (
     EventRow,
     Order,
 )
-from app.store import StoreUnavailable
+from app.store import RowNotFound, StoreUnavailable
 from tests.fakes import InMemoryStore
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
@@ -54,6 +55,20 @@ class PortalMemoryStore(InMemoryStore):
     and the reason it is worth raising rather than living with.
     """
 
+    #: The one company_profile row. 0003 seeds it; a store without it answers 503.
+    profile: ClassVar[dict[str, object] | None] = {
+        "display_name": "Pacific Textiles",
+        "business_type": "importer",
+        "currency": "USD",
+        "timezone": "America/Mexico_City",
+        "agent_name": "Volta",
+        "agent_role": "transport coordinator",
+        "primary_language": "en",
+        "fallback_language": "es-MX",
+        "warehouse_city": "Tampa",
+        "updated_by": "seed",
+    }
+
     async def list_orders(self) -> list[Order]:
         return list(self.orders.values())
 
@@ -71,6 +86,15 @@ class PortalMemoryStore(InMemoryStore):
 
     async def commitments_for(self, order_id: str) -> list[Commitment]:
         return [c for c in self.commitments.values() if c.order_id == order_id]
+
+    async def company_profile(self) -> dict[str, object] | None:
+        return dict(self.profile) if self.profile else None
+
+    async def save_company_profile(self, values: dict[str, object]) -> dict[str, object]:
+        if self.profile is None:
+            raise RowNotFound("no company_profile row; apply migration 0003")
+        self.profile.update(values)
+        return dict(self.profile)
 
 
 class FakeMarket:
@@ -634,3 +658,65 @@ def test_the_trace_never_carries_a_prompt() -> None:
 def test_an_unknown_call_has_no_trace() -> None:
     client, _, _, _, _ = build()
     assert client.get("/api/calls/nope/trace").status_code == 404
+
+
+# ------------------------------------------------------------------------ the business
+
+
+def test_the_profile_comes_from_the_database() -> None:
+    """Not from the environment. An operator can correct a warehouse; a redeploy is not that."""
+    client, _, _, _, _ = build()
+
+    body = client.get("/api/profile").json()
+
+    assert body["display_name"] == "Pacific Textiles"
+    assert body["warehouse_city"] == "Tampa"
+    assert body["agent_name"] == "Volta"
+
+
+def test_editing_the_profile_records_who_did_it() -> None:
+    """The warehouse address is read out loud on a recorded line. It carries a name."""
+    client, store, _, _, _ = build()
+
+    body = client.put(
+        "/api/profile",
+        json={
+            "warehouse_address": "900 Channelside Dr",
+            "warehouse_city": "Tampa",
+            "updated_by": "diego@volta.test",
+        },
+    ).json()
+
+    assert body["warehouse_address"] == "900 Channelside Dr"
+    assert body["updated_by"] == "diego@volta.test"
+    assert store.profile is not None
+    assert store.profile["warehouse_address"] == "900 Channelside Dr"
+
+
+def test_an_edit_without_a_name_is_rejected() -> None:
+    client, _, _, _, _ = build()
+
+    response = client.put("/api/profile", json={"warehouse_city": "Orlando"})
+
+    assert response.status_code == 422
+
+
+def test_a_partial_edit_leaves_the_rest_alone() -> None:
+    """A form edits what it edits. Absent fields are not an instruction to blank them."""
+    client, _, _, _, _ = build()
+
+    body = client.put(
+        "/api/profile", json={"warehouse_hours": "07:00-19:00", "updated_by": "ops"}
+    ).json()
+
+    assert body["warehouse_hours"] == "07:00-19:00"
+    assert body["display_name"] == "Pacific Textiles"
+
+
+def test_a_store_without_the_migration_says_so() -> None:
+    class NoProfile(PortalMemoryStore):
+        profile = None
+
+    client, _, _, _, _ = build(NoProfile())
+
+    assert client.get("/api/profile").status_code == 503

@@ -333,3 +333,15 @@ h3 { font-size: 20px; }
   .trace-table td { padding: 3px 0; }
   .trace-time { font-size: 10px; }
 }
+
+/* Business profile. Three sections rather than twenty-two fields in a column. */
+.profile-fields { display: grid; gap: 12px; margin-top: 20px; }
+.profile-field { display: grid; gap: 3px; }
+.profile-field .eyebrow { margin: 0; color: var(--ink-muted); }
+.profile-field .field { margin: 0; }
+.profile-wide { grid-column: 1 / -1; }
+.profile-wide .profile-fields { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 20px; }
+.profile-save { grid-column: 1 / -1; margin-top: 24px; }
+.profile-save .field { max-width: 320px; }
+.profile-save .dialog-actions { justify-content: flex-start; margin-top: 14px; }
+.profile-save .primary-button { width: auto; }

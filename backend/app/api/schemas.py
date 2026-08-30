@@ -32,6 +32,8 @@ from app.domain import (
 
 __all__ = [
     "ApprovalDecisionRequest",
+    "BusinessProfile",
+    "BusinessProfileUpdate",
     "CallDetail",
     "DemurrageView",
     "MandateView",
@@ -215,3 +217,81 @@ class SweepResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     call_ids: list[str]
+
+
+# --------------------------------------------------------------------------- the business
+
+
+class BusinessProfile(BaseModel):
+    """Who Volta works for, and where the cargo goes.
+
+    Read from the database rather than the environment. The prompt fields are configuration
+    and could have stayed in `config.py`; the warehouse could not. It has a street address, a
+    contact and opening hours, it changes because the business changed and not because
+    somebody redeployed, and the person who knows it is an operator with a browser.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    display_name: str
+    legal_name: str | None = None
+    business_type: str = "importer"
+    city: str | None = None
+    country: str | None = None
+    currency: str = "USD"
+    timezone: str = "America/Mexico_City"
+    business_hours: str | None = None
+
+    agent_name: str = "Volta"
+    agent_role: str = "transport coordinator"
+    primary_language: str = "en"
+    fallback_language: str = "es-MX"
+
+    warehouse_name: str | None = None
+    warehouse_address: str | None = None
+    warehouse_city: str | None = None
+    warehouse_state: str | None = None
+    warehouse_postal_code: str | None = None
+    warehouse_country: str | None = None
+    warehouse_contact_name: str | None = None
+    warehouse_phone: str | None = None
+    warehouse_hours: str | None = None
+    warehouse_notes: str | None = None
+
+    updated_at: datetime | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description="Who last said this was true. A fact the agent reads out loud on a call "
+        "should carry a name, for the same reason a mandate does.",
+    )
+
+
+class BusinessProfileUpdate(BaseModel):
+    """What the settings form sends. Every field optional: a form edits what it edits."""
+
+    display_name: str | None = Field(default=None, min_length=1)
+    legal_name: str | None = None
+    business_type: str | None = None
+    city: str | None = None
+    country: str | None = None
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    timezone: str | None = None
+    business_hours: str | None = None
+
+    agent_name: str | None = Field(default=None, min_length=1)
+    agent_role: str | None = None
+    primary_language: str | None = None
+    fallback_language: str | None = None
+
+    warehouse_name: str | None = None
+    warehouse_address: str | None = None
+    warehouse_city: str | None = None
+    warehouse_state: str | None = None
+    warehouse_postal_code: str | None = None
+    warehouse_country: str | None = None
+    warehouse_contact_name: str | None = None
+    warehouse_phone: str | None = None
+    warehouse_hours: str | None = None
+    warehouse_notes: str | None = None
+
+    updated_by: str = Field(min_length=1, description="Required. Who is making the change.")

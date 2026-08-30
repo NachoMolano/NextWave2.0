@@ -117,7 +117,12 @@ async def sweep_deadlines(
 
     if plans:
         if dial is None:
-            await run_campaign(plans, placer, settings, profile=profile_from_settings(settings))
+            # Same re-keying as the injected dialler does; see Store.attach_vapi_call_id.
+            placed = await run_campaign(
+                plans, placer, settings, profile=profile_from_settings(settings)
+            )
+            for our_id, provider_id in placed.items():
+                await store.attach_vapi_call_id(our_id, provider_id)
         else:
             await dial(plans, placer, settings)
     return [plan.call_id for plan in plans]

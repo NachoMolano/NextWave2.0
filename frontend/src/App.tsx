@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { ApiError, hasPortalToken, setPortalToken, voltaApi } from './api'
 import type {
   Approval,
+  BusinessProfile,
+  BusinessProfileUpdate,
   CallDetail,
   CallRecord,
   Carrier,
@@ -25,6 +27,7 @@ type Route =
   | { name: 'call'; orderId: string; callId: string }
   | { name: 'approvals' }
   | { name: 'carriers' }
+  | { name: 'profile' }
 
 function parseRoute(): Route {
   const path = window.location.hash.replace(/^#/, '') || '/'
@@ -35,6 +38,7 @@ function parseRoute(): Route {
   if (parts[0] === 'orders' && parts[1]) return { name: 'order', orderId: parts[1] }
   if (parts[0] === 'approvals') return { name: 'approvals' }
   if (parts[0] === 'carriers') return { name: 'carriers' }
+  if (parts[0] === 'profile') return { name: 'profile' }
   return { name: 'orders' }
 }
 
@@ -155,6 +159,11 @@ export default function App() {
             label="Carriers"
             onClick={() => navigate('/carriers')}
           />
+          <NavItem
+            active={route.name === 'profile'}
+            label="Business"
+            onClick={() => navigate('/profile')}
+          />
         </nav>
         <div className="sidebar-footer">
           <span className="source-dot" />
@@ -184,6 +193,7 @@ export default function App() {
         )}
         {route.name === 'approvals' && <ApprovalsPage onOpen={(id) => navigate(`/orders/${id}`)} />}
         {route.name === 'carriers' && <CarriersPage />}
+        {route.name === 'profile' && <ProfilePage />}
       </div>
     </div>
   )
@@ -1102,6 +1112,187 @@ function CallEvidencePage({ callId, onBack }: { callId: string; onBack: () => vo
           )}
         </section>
       </div>
+    </div>
+  )
+}
+
+
+/* ---------------------------------------------------------------------- business */
+
+/** Sections, so the form reads as three things rather than twenty-two fields. */
+const PROFILE_SECTIONS: {
+  title: string
+  blurb: string
+  wide?: boolean
+  fields: [keyof BusinessProfile, string][]
+}[] = [
+    {
+      title: 'The business',
+      blurb: 'Rendered into every prompt. The agent says this out loud.',
+      fields: [
+        ['display_name', 'Trading name'],
+        ['legal_name', 'Legal name'],
+        ['business_type', 'Business type'],
+        ['city', 'City'],
+        ['country', 'Country'],
+        ['currency', 'Currency'],
+        ['timezone', 'Timezone'],
+        ['business_hours', 'Business hours'],
+      ],
+    },
+    {
+      title: 'On the phone',
+      blurb: 'Who the agent says it is, and which language it opens in.',
+      fields: [
+        ['agent_name', 'Agent name'],
+        ['agent_role', 'Agent role'],
+        ['primary_language', 'Primary language'],
+        ['fallback_language', 'Fallback language'],
+      ],
+    },
+    {
+      title: 'Warehouse',
+      wide: true,
+      blurb:
+        'Where the cargo is delivered. The address is spoken to carriers; the contact and ' +
+        'the hours are what a driver needs on arrival.',
+      fields: [
+        ['warehouse_name', 'Site name'],
+        ['warehouse_address', 'Street address'],
+        ['warehouse_city', 'City'],
+        ['warehouse_state', 'State'],
+        ['warehouse_postal_code', 'Postal code'],
+        ['warehouse_country', 'Country'],
+        ['warehouse_contact_name', 'Contact'],
+        ['warehouse_phone', 'Phone'],
+        ['warehouse_hours', 'Receiving hours'],
+        ['warehouse_notes', 'Notes for drivers'],
+      ],
+    },
+  ]
+
+function ProfilePage() {
+  const [profile, setProfile] = useState<BusinessProfile | null>(null)
+  const [draft, setDraft] = useState<Partial<BusinessProfile>>({})
+  const [updatedBy, setUpdatedBy] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    voltaApi
+      .getProfile()
+      .then((value) => {
+        setProfile(value)
+        setDraft({})
+        setError(null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [])
+
+  useEffect(load, [load])
+
+  if (error) return <ErrorState message={error} onRetry={load} />
+  if (!profile) return <Loading what="the business profile" />
+
+  const dirty = Object.keys(draft).length > 0
+
+  const save = async () => {
+    setBusy(true)
+    setNotice(null)
+    try {
+      const body = { ...draft, updated_by: updatedBy } as BusinessProfileUpdate
+      const saved = await voltaApi.updateProfile(body)
+      setProfile(saved)
+      setDraft({})
+      setNotice('Saved.')
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="page">
+      <div className="page-heading">
+        <p className="eyebrow">Business</p>
+        <h1>
+          What Volta says <em>it is</em>
+        </h1>
+        <p>
+          Every value here is read from the database and rendered into the prompt. Change one
+          and the next call says something different, which is why a change carries a name.
+        </p>
+      </div>
+
+      {notice && (
+        <div className="command-notice">
+          <span>✓</span>
+          <p>{notice}</p>
+          <button onClick={() => setNotice(null)}>×</button>
+        </div>
+      )}
+
+      <div className="configuration-grid">
+        {PROFILE_SECTIONS.map((section) => (
+          <section
+            className={
+              section.wide
+                ? 'surface configuration-section profile-wide'
+                : 'surface configuration-section'
+            }
+            key={section.title}
+          >
+            <p className="eyebrow">{section.title}</p>
+            <p className="configuration-note">{section.blurb}</p>
+            <div className="profile-fields">
+              {section.fields.map(([key, label]) => (
+                <label className="profile-field" key={key}>
+                  <span className="eyebrow">{label}</span>
+                  <input
+                    className="field"
+                    value={String(draft[key] ?? profile[key] ?? '')}
+                    onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                  />
+                </label>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <section className="surface configuration-section profile-save">
+        <p className="eyebrow">Who is making this change</p>
+        <p className="configuration-note">
+          The warehouse address is spoken to carriers and the agent&rsquo;s name is how it
+          introduces itself. A change to either changes what the system says on a recorded
+          line, so it is recorded against a person — the same reason a mandate is.
+        </p>
+        <input
+          className="field"
+          value={updatedBy}
+          placeholder="ops@volta.test"
+          onChange={(e) => setUpdatedBy(e.target.value)}
+        />
+        <div className="dialog-actions">
+          <button className="secondary-button" disabled={!dirty || busy} onClick={load}>
+            Discard
+          </button>
+          <button
+            className="primary-button"
+            disabled={!dirty || busy || !updatedBy.trim()}
+            onClick={save}
+          >
+            {dirty ? `Save ${Object.keys(draft).length} change(s)` : 'No changes'}
+          </button>
+        </div>
+        {profile.updated_by && (
+          <p className="configuration-note">
+            Last changed by {profile.updated_by} · {formatDate(profile.updated_at)}
+          </p>
+        )}
+      </section>
     </div>
   )
 }

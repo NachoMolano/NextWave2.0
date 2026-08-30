@@ -36,6 +36,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.api.schemas import (
     ApprovalDecisionRequest,
+    BusinessProfile,
+    BusinessProfileUpdate,
     CallDetail,
     DemurrageView,
     MandateView,
@@ -87,6 +89,10 @@ class PortalStore(Store, Protocol):
     async def events_for_call(self, call_id: str) -> list[EventRow]: ...
 
     async def commitments_for(self, order_id: str) -> list[Commitment]: ...
+
+    async def company_profile(self) -> dict[str, object] | None: ...
+
+    async def save_company_profile(self, values: dict[str, object]) -> dict[str, object]: ...
 
     async def save_order_if_mandate_version(self, order: Order, expected_version: int) -> bool: ...
 
@@ -391,6 +397,33 @@ def create_api_router(
     async def list_carriers() -> list[Carrier]:
         with _guard():
             return await store.list_carriers()
+
+    # ---------------------------------------------------------------------- profile
+
+    @router.get("/profile", response_model=BusinessProfile)
+    async def get_profile() -> BusinessProfile:
+        """The business Volta speaks for, and the warehouse it delivers to."""
+        with _guard():
+            row = await store.company_profile()
+        if row is None:
+            raise HTTPException(
+                status_code=503, detail="no company profile; apply migration 0003"
+            )
+        return BusinessProfile.model_validate(row)
+
+    @router.put("/profile", response_model=BusinessProfile)
+    async def update_profile(body: BusinessProfileUpdate) -> BusinessProfile:
+        """Edit the profile. `updated_by` is required, not decorative.
+
+        The warehouse address is read out loud to carriers and the agent's name is how it
+        introduces itself. A change to either is a change to what the system says on a
+        recorded line, so it carries whoever made it -- the same argument as the mandate.
+        """
+        values: dict[str, object] = body.model_dump(exclude_none=True)
+        values["updated_at"] = now().isoformat()
+        with _guard():
+            row = await store.save_company_profile(values)
+        return BusinessProfile.model_validate(row)
 
     # -------------------------------------------------------------------------- jobs
 

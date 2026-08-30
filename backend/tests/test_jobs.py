@@ -299,3 +299,4 @@ async def test_an_unmeasurable_anchor_is_recorded_as_an_event() -> None:
 
     assert await ledger.anchor_ms(call_id) == 0
     assert any(e.type == "call.anchor_unmeasurable" for e in store.events.values())
+
